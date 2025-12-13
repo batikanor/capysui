@@ -360,17 +360,17 @@ export function GeoProofApp() {
                     <div className="flex items-center gap-3">
                       <input
                         type="range"
-                        min={0.2}
+                        min={0.05}
                         max={60}
-                        step={0.1}
+                        step={0.05}
                         value={radiusKm}
                         onChange={(e) => setRadiusKm(Number(e.target.value))}
                         className="w-full"
                       />
                       <input
                         type="number"
-                        min={0.1}
-                        step={0.1}
+                        min={0.01}
+                        step={0.01}
                         value={radiusKm}
                         onChange={(e) => {
                           const v = Number(e.target.value);
