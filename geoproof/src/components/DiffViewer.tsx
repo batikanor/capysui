@@ -17,6 +17,9 @@ type Props = {
   beforeItemBbox?: BBox | null;
   afterItemBbox?: BBox | null;
   selectionBbox?: BBox | null;
+  beforeTileUrlTemplate?: string | null;
+  afterTileUrlTemplate?: string | null;
+  tileZoom?: number;
   threshold: number; // 0..255
   onComputed?: (stats: DiffStats | null) => void;
 };
@@ -63,12 +66,104 @@ function cropRectForBboxes(
   return { sx, sy, sw, sh };
 }
 
+function clampLat(lat: number) {
+  // WebMercator limits.
+  return Math.max(-85.05112878, Math.min(85.05112878, lat));
+}
+
+function lonLatToWorldPx(lon: number, lat: number, z: number) {
+  const n = 2 ** z;
+  const x = ((lon + 180) / 360) * n * 256;
+  const latRad = (clampLat(lat) * Math.PI) / 180;
+  const y = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n * 256;
+  return { x, y };
+}
+
+function fillTemplate(tpl: string, z: number, x: number, y: number) {
+  return tpl.replace("{z}", String(z)).replace("{x}", String(x)).replace("{y}", String(y));
+}
+
+async function loadBboxImageFromTiles(
+  tileTpl: string,
+  bbox: BBox,
+  requestedZoom: number,
+): Promise<{ imageData: ImageData; dataUrl: string; usedZoom: number }>
+{
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+
+  let z = Math.max(0, Math.min(24, Math.round(requestedZoom)));
+
+  const maxTiles = 36;
+  const calc = (zoom: number) => {
+    const pMin = lonLatToWorldPx(minLng, maxLat, zoom); // top-left
+    const pMax = lonLatToWorldPx(maxLng, minLat, zoom); // bottom-right
+
+    const x0 = Math.floor(pMin.x / 256);
+    const y0 = Math.floor(pMin.y / 256);
+    const x1 = Math.floor(pMax.x / 256);
+    const y1 = Math.floor(pMax.y / 256);
+    const tilesX = x1 - x0 + 1;
+    const tilesY = y1 - y0 + 1;
+    return { pMin, pMax, x0, y0, x1, y1, tilesX, tilesY };
+  };
+
+  let c = calc(z);
+  while (z > 0 && c.tilesX * c.tilesY > maxTiles) {
+    z -= 1;
+    c = calc(z);
+  }
+
+  const mosaicW = c.tilesX * 256;
+  const mosaicH = c.tilesY * 256;
+  const mosaic = document.createElement("canvas");
+  mosaic.width = mosaicW;
+  mosaic.height = mosaicH;
+  const mctx = mosaic.getContext("2d", { willReadFrequently: true });
+  if (!mctx) throw new Error("Canvas not available");
+
+  // Fetch tiles sequentially (small count; avoids spiky parallelism).
+  for (let ty = c.y0; ty <= c.y1; ty++) {
+    for (let tx = c.x0; tx <= c.x1; tx++) {
+      const url = fillTemplate(tileTpl, z, tx, ty);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Tile fetch failed (${res.status})`);
+      const blob = await res.blob();
+      const bmp = await createImageBitmap(blob);
+      mctx.drawImage(bmp, (tx - c.x0) * 256, (ty - c.y0) * 256, 256, 256);
+    }
+  }
+
+  const sx = c.pMin.x - c.x0 * 256;
+  const sy = c.pMin.y - c.y0 * 256;
+  const sw = c.pMax.x - c.pMin.x;
+  const sh = c.pMax.y - c.pMin.y;
+
+  const maxW = 1024;
+  const scale = Math.min(1, maxW / Math.max(sw, 1));
+  const outW = Math.max(1, Math.floor(sw * scale));
+  const outH = Math.max(1, Math.floor(sh * scale));
+
+  const out = document.createElement("canvas");
+  out.width = outW;
+  out.height = outH;
+  const octx = out.getContext("2d", { willReadFrequently: true });
+  if (!octx) throw new Error("Canvas not available");
+  octx.drawImage(mosaic, sx, sy, sw, sh, 0, 0, outW, outH);
+
+  const imageData = octx.getImageData(0, 0, outW, outH);
+  const dataUrl = out.toDataURL("image/png");
+  return { imageData, dataUrl, usedZoom: z };
+}
+
 export function DiffViewer({
   beforeUrl,
   afterUrl,
   beforeItemBbox,
   afterItemBbox,
   selectionBbox,
+  beforeTileUrlTemplate,
+  afterTileUrlTemplate,
+  tileZoom = 16,
   threshold,
   onComputed,
 }: Props) {
@@ -91,12 +186,34 @@ export function DiffViewer({
     () =>
       `${beforeUrl ?? ""}|${afterUrl ?? ""}|${threshold}|${selectionBbox?.join(",") ?? ""}|${
         beforeItemBbox?.join(",") ?? ""
-      }|${afterItemBbox?.join(",") ?? ""}`,
-    [beforeUrl, afterUrl, threshold, selectionBbox, beforeItemBbox, afterItemBbox],
+      }|${afterItemBbox?.join(",") ?? ""}|${beforeTileUrlTemplate ?? ""}|${afterTileUrlTemplate ?? ""}|${tileZoom}`,
+    [beforeUrl, afterUrl, threshold, selectionBbox, beforeItemBbox, afterItemBbox, beforeTileUrlTemplate, afterTileUrlTemplate, tileZoom],
   );
   const inputs = useMemo(
-    () => ({ beforeUrl, afterUrl, threshold, key, beforeItemBbox, afterItemBbox, selectionBbox }),
-    [beforeUrl, afterUrl, threshold, key, beforeItemBbox, afterItemBbox, selectionBbox],
+    () => ({
+      beforeUrl,
+      afterUrl,
+      threshold,
+      key,
+      beforeItemBbox,
+      afterItemBbox,
+      selectionBbox,
+      beforeTileUrlTemplate,
+      afterTileUrlTemplate,
+      tileZoom,
+    }),
+    [
+      beforeUrl,
+      afterUrl,
+      threshold,
+      key,
+      beforeItemBbox,
+      afterItemBbox,
+      selectionBbox,
+      beforeTileUrlTemplate,
+      afterTileUrlTemplate,
+      tileZoom,
+    ],
   );
 
   useEffect(() => {
@@ -104,50 +221,101 @@ export function DiffViewer({
     onComputed?.(null);
 
     async function run() {
-      if (!inputs.beforeUrl || !inputs.afterUrl) return;
+      const canUseTiles =
+        Boolean(inputs.beforeTileUrlTemplate) &&
+        Boolean(inputs.afterTileUrlTemplate) &&
+        Boolean(inputs.selectionBbox);
+
+      if (!canUseTiles && (!inputs.beforeUrl || !inputs.afterUrl)) return;
       const canvas = canvasRef.current;
       if (!canvas) return;
 
       try {
-        const [before, after] = await Promise.all([
-          loadImage(inputs.beforeUrl),
-          loadImage(inputs.afterUrl),
-        ]);
+        let a: ImageData;
+        let b: ImageData;
+        let beforeThumbUrl: string;
+        let afterThumbUrl: string;
 
-        if (cancelled) return;
+        if (canUseTiles) {
+          const b0 = inputs.beforeTileUrlTemplate;
+          const b1 = inputs.afterTileUrlTemplate;
+          const bb = inputs.selectionBbox;
+          if (!b0 || !b1 || !bb) return;
 
-        const cropA = cropRectForBboxes(before, inputs.beforeItemBbox, inputs.selectionBbox);
-        const cropB = cropRectForBboxes(after, inputs.afterItemBbox, inputs.selectionBbox);
+          const [ra, rb] = await Promise.all([
+            loadBboxImageFromTiles(b0, bb, inputs.tileZoom ?? 16),
+            loadBboxImageFromTiles(b1, bb, inputs.tileZoom ?? 16),
+          ]);
+          if (cancelled) return;
+          // Ensure same dimensions.
+          const w = Math.min(ra.imageData.width, rb.imageData.width);
+          const h = Math.min(ra.imageData.height, rb.imageData.height);
+          const ca = document.createElement("canvas");
+          ca.width = w;
+          ca.height = h;
+          const caCtx = ca.getContext("2d", { willReadFrequently: true });
+          if (!caCtx) return;
+          caCtx.putImageData(ra.imageData, 0, 0);
+          a = caCtx.getImageData(0, 0, w, h);
+          beforeThumbUrl = ra.dataUrl;
 
-        const maxW = 640;
-        const baseW = Math.min(cropA.sw, cropB.sw);
-        const baseH = Math.min(cropA.sh, cropB.sh);
-        const scale = Math.min(1, maxW / Math.max(baseW, 1));
-        const w = Math.max(1, Math.floor(baseW * scale));
-        const h = Math.max(1, Math.floor(baseH * scale));
+          const cb = document.createElement("canvas");
+          cb.width = w;
+          cb.height = h;
+          const cbCtx = cb.getContext("2d", { willReadFrequently: true });
+          if (!cbCtx) return;
+          cbCtx.putImageData(rb.imageData, 0, 0);
+          b = cbCtx.getImageData(0, 0, w, h);
+          afterThumbUrl = rb.dataUrl;
 
-        canvas.width = w;
-        canvas.height = h;
+          canvas.width = w;
+          canvas.height = h;
+        } else {
+          // Fallback: use Planetary Computer rendered_preview (full granule) and crop by bbox (approx).
+          const b0 = inputs.beforeUrl;
+          const b1 = inputs.afterUrl;
+          if (!b0 || !b1) return;
+          const [before, after] = await Promise.all([
+            loadImage(b0),
+            loadImage(b1),
+          ]);
+
+          if (cancelled) return;
+
+          const cropA = cropRectForBboxes(before, inputs.beforeItemBbox, inputs.selectionBbox);
+          const cropB = cropRectForBboxes(after, inputs.afterItemBbox, inputs.selectionBbox);
+
+          const maxW = 640;
+          const baseW = Math.min(cropA.sw, cropB.sw);
+          const baseH = Math.min(cropA.sh, cropB.sh);
+          const scale = Math.min(1, maxW / Math.max(baseW, 1));
+          const w = Math.max(1, Math.floor(baseW * scale));
+          const h = Math.max(1, Math.floor(baseH * scale));
+
+          canvas.width = w;
+          canvas.height = h;
+          const tmp = document.createElement("canvas");
+          tmp.width = w;
+          tmp.height = h;
+          const tctx = tmp.getContext("2d", { willReadFrequently: true });
+          if (!tctx) return;
+
+          tctx.clearRect(0, 0, w, h);
+          tctx.drawImage(before, cropA.sx, cropA.sy, cropA.sw, cropA.sh, 0, 0, w, h);
+          a = tctx.getImageData(0, 0, w, h);
+          beforeThumbUrl = tmp.toDataURL("image/png");
+
+          tctx.clearRect(0, 0, w, h);
+          tctx.drawImage(after, cropB.sx, cropB.sy, cropB.sw, cropB.sh, 0, 0, w, h);
+          b = tctx.getImageData(0, 0, w, h);
+          afterThumbUrl = tmp.toDataURL("image/png");
+        }
+
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) return;
 
-        const tmp = document.createElement("canvas");
-        tmp.width = w;
-        tmp.height = h;
-        const tctx = tmp.getContext("2d", { willReadFrequently: true });
-        if (!tctx) return;
-
-        tctx.clearRect(0, 0, w, h);
-        tctx.drawImage(before, cropA.sx, cropA.sy, cropA.sw, cropA.sh, 0, 0, w, h);
-        const a = tctx.getImageData(0, 0, w, h);
-
-        const beforeThumbUrl = tmp.toDataURL("image/png");
-
-        tctx.clearRect(0, 0, w, h);
-        tctx.drawImage(after, cropB.sx, cropB.sy, cropB.sw, cropB.sh, 0, 0, w, h);
-        const b = tctx.getImageData(0, 0, w, h);
-
-        const afterThumbUrl = tmp.toDataURL("image/png");
+        const w = Math.min(a.width, b.width);
+        const h = Math.min(a.height, b.height);
 
         const out = ctx.createImageData(w, h);
         const ad = a.data;
@@ -209,12 +377,15 @@ export function DiffViewer({
     };
   }, [inputs, onComputed]);
 
-  if (!beforeUrl || !afterUrl) return null;
+  const hasAnySource = Boolean(beforeTileUrlTemplate && afterTileUrlTemplate && selectionBbox) || (Boolean(beforeUrl) && Boolean(afterUrl));
+  if (!hasAnySource) return null;
 
   const diffUrl = state.key === key ? state.diffUrl : null;
   const error = state.key === key ? state.error : null;
   const beforeShownUrl = state.key === key ? state.beforeCroppedUrl ?? beforeUrl : beforeUrl;
   const afterShownUrl = state.key === key ? state.afterCroppedUrl ?? afterUrl : afterUrl;
+
+  if (!beforeShownUrl || !afterShownUrl) return null;
 
   return (
     <div className="space-y-3">

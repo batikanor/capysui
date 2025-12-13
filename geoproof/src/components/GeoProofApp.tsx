@@ -11,6 +11,8 @@ type StacPicked = {
   cloudCover: number | null;
   previewUrl: string | null;
   bbox: BBox | null;
+  tileUrlTemplate?: string | null;
+  tileBounds?: BBox | null;
 };
 
 type StacResponse = {
@@ -90,6 +92,8 @@ export function GeoProofApp() {
 
   const [threshold, setThreshold] = useState<number>(40);
   const [diffStats, setDiffStats] = useState<DiffStats | null>(null);
+
+  const [tileZoom, setTileZoom] = useState<number>(16);
 
   const beforeUrl = stac?.before.previewUrl ?? null;
   const afterUrl = stac?.after.previewUrl ?? null;
@@ -356,14 +360,26 @@ export function GeoProofApp() {
                     <div className="flex items-center gap-3">
                       <input
                         type="range"
-                        min={2}
-                        max={80}
+                        min={0.2}
+                        max={60}
+                        step={0.1}
                         value={radiusKm}
                         onChange={(e) => setRadiusKm(Number(e.target.value))}
                         className="w-full"
                       />
-                      <div className="w-14 text-right font-mono text-xs text-zinc-700">{radiusKm}</div>
+                      <input
+                        type="number"
+                        min={0.1}
+                        step={0.1}
+                        value={radiusKm}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (Number.isFinite(v)) setRadiusKm(v);
+                        }}
+                        className="w-20 rounded-lg border border-zinc-200 bg-white px-2 py-2 text-right font-mono text-xs text-zinc-900"
+                      />
                     </div>
+                    <div className="mt-1 text-xs text-zinc-500">Tip: very small radii work best with higher tile zoom.</div>
                   </div>
                 </div>
               ) : null}
@@ -491,6 +507,29 @@ export function GeoProofApp() {
             </div>
 
             <div className="rounded-xl border border-zinc-200 bg-white p-4">
+              <div className="mb-3 text-sm font-medium text-zinc-900">Output quality</div>
+              <div className="text-xs text-zinc-600">
+                We render before/after using Planetary Computer Sentinel-2 tiles. Higher zoom = sharper crops (and heavier
+                requests).
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <input
+                  type="range"
+                  min={11}
+                  max={18}
+                  step={1}
+                  value={tileZoom}
+                  onChange={(e) => setTileZoom(Number(e.target.value))}
+                  className="w-full"
+                />
+                <div className="w-14 text-right font-mono text-xs text-zinc-700">z={tileZoom}</div>
+              </div>
+              <div className="mt-2 text-xs text-zinc-500">
+                If the bbox is large, we may automatically zoom out to keep tile downloads reasonable.
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-200 bg-white p-4">
               <div className="mb-2 text-sm font-medium text-zinc-900">3) Publish (scaffold)</div>
               <div className="text-xs text-zinc-600">
                 Next step: store evidence bundle on Walrus and anchor a `ChangeReport` on Sui. For now, we produce a
@@ -558,6 +597,9 @@ export function GeoProofApp() {
               selectionBbox={effectiveBbox}
               beforeItemBbox={stac?.before.bbox ?? null}
               afterItemBbox={stac?.after.bbox ?? null}
+              beforeTileUrlTemplate={stac?.before.tileUrlTemplate ?? null}
+              afterTileUrlTemplate={stac?.after.tileUrlTemplate ?? null}
+              tileZoom={tileZoom}
               threshold={threshold}
               onComputed={setDiffStats}
             />

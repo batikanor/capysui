@@ -16,6 +16,13 @@ type StacFeature = {
   assets?: Record<string, { href?: string }>;
 };
 
+type TileJson = {
+  tiles?: string[];
+  bounds?: number[];
+  minzoom?: number;
+  maxzoom?: number;
+};
+
 function normalizeBbox(bbox: number[] | undefined): BBox | null {
   if (!bbox || bbox.length !== 4) return null;
   const [minLng, minLat, maxLng, maxLat] = bbox;
@@ -44,6 +51,24 @@ function pickClosest(features: StacFeature[], targetMs: number): StacFeature | n
   }
 
   return best;
+}
+
+async function fetchTileInfo(itemId: string) {
+  const url = new URL("https://planetarycomputer.microsoft.com/api/data/v1/item/tilejson.json");
+  url.searchParams.set("collection", "sentinel-2-l2a");
+  url.searchParams.set("item", itemId);
+  url.searchParams.set("assets", "visual");
+
+  try {
+    const res = await fetch(url.toString(), { cache: "no-store" });
+    if (!res.ok) return { tileUrlTemplate: null as string | null, tileBounds: null as BBox | null };
+    const json = (await res.json()) as TileJson;
+    const tileUrlTemplate = Array.isArray(json.tiles) && typeof json.tiles[0] === "string" ? json.tiles[0] : null;
+    const tileBounds = normalizeBbox(json.bounds);
+    return { tileUrlTemplate, tileBounds };
+  } catch {
+    return { tileUrlTemplate: null as string | null, tileBounds: null as BBox | null };
+  }
 }
 
 export async function POST(req: Request) {
@@ -139,6 +164,8 @@ export async function POST(req: Request) {
     };
   };
 
+  const [beforeTile, afterTile] = await Promise.all([fetchTileInfo(before.id), fetchTileInfo(after.id)]);
+
   return NextResponse.json({
     query: {
       bbox: body.bbox,
@@ -147,7 +174,7 @@ export async function POST(req: Request) {
       collection: "sentinel-2-l2a",
       totalCandidates: features.length,
     },
-    before: normalizeItem(before),
-    after: normalizeItem(after),
+    before: { ...normalizeItem(before), ...beforeTile },
+    after: { ...normalizeItem(after), ...afterTile },
   });
 }
