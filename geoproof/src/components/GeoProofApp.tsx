@@ -34,6 +34,7 @@ type StacResponse = {
 };
 
 type Variant = "closest" | "clearest";
+type PrimarySource = "sentinel-2-l2a" | "landsat-c2-l2";
 
 function pickVariant(stac: StacResponse, v: Variant) {
   if (v === "clearest") {
@@ -110,6 +111,7 @@ export function GeoProofApp() {
   const [secondaryWarning, setSecondaryWarning] = useState<string | null>(null);
 
   const [variant, setVariant] = useState<Variant>("clearest");
+  const [primarySource, setPrimarySource] = useState<PrimarySource>("sentinel-2-l2a");
   const [maxCloudOffsetDays, setMaxCloudOffsetDays] = useState<number>(14);
   const [showSecondary, setShowSecondary] = useState<boolean>(true);
 
@@ -118,7 +120,11 @@ export function GeoProofApp() {
 
   const [tileZoom, setTileZoom] = useState<number>(16);
 
-  const primary = stacS2;
+  const primary = useMemo(() => {
+    if (primarySource === "landsat-c2-l2") return stacLandsat ?? stacS2;
+    return stacS2;
+  }, [primarySource, stacLandsat, stacS2]);
+
   const primaryPicked = useMemo(() => (primary ? pickVariant(primary, variant) : null), [primary, variant]);
 
   const effectiveBbox = useMemo(() => {
@@ -163,6 +169,8 @@ export function GeoProofApp() {
       window: { startDate, endDate },
       collection: primary.query.collection,
       imagery: {
+        sourceRequested: primarySource,
+        sourceUsed: primary.query.collection,
         variant,
         before: primaryPicked.before,
         after: primaryPicked.after,
@@ -179,7 +187,7 @@ export function GeoProofApp() {
         sui: "TODO",
       },
     };
-  }, [effectiveBbox, primary, primaryPicked, diffStats, startDate, endDate, threshold, variant]);
+  }, [effectiveBbox, primary, primaryPicked, diffStats, startDate, endDate, threshold, variant, primarySource]);
 
   const runSearch = useCallback(async () => {
     setError(null);
@@ -526,6 +534,37 @@ export function GeoProofApp() {
               <div className="mt-3 rounded-xl border border-zinc-200 bg-white p-3">
                 <div className="text-xs font-medium text-zinc-900">Cloud handling + sources</div>
                 <div className="mt-2 grid gap-2 text-xs text-zinc-700">
+                  <div className="mt-1">
+                    <div className="mb-1 text-xs font-medium text-zinc-700">Primary source for report (scaffold)</div>
+                    <div className="flex flex-wrap gap-3">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="primarySource"
+                          checked={primarySource === "sentinel-2-l2a"}
+                          onChange={() => {
+                            setPrimarySource("sentinel-2-l2a");
+                            setDiffStats(null);
+                          }}
+                        />
+                        Sentinel-2
+                      </label>
+                      <label className={`flex items-center gap-2 ${showSecondary ? "" : "opacity-50"}`}>
+                        <input
+                          type="radio"
+                          name="primarySource"
+                          checked={primarySource === "landsat-c2-l2"}
+                          disabled={!showSecondary}
+                          onChange={() => {
+                            setPrimarySource("landsat-c2-l2");
+                            setDiffStats(null);
+                          }}
+                        />
+                        Landsat
+                      </label>
+                    </div>
+                  </div>
+
                   <label className="flex items-center gap-2">
                     <input
                       type="radio"
@@ -572,7 +611,12 @@ export function GeoProofApp() {
                       type="checkbox"
                       checked={showSecondary}
                       onChange={(e) => {
-                        setShowSecondary(e.target.checked);
+                        const next = e.target.checked;
+                        setShowSecondary(next);
+                        if (!next && primarySource === "landsat-c2-l2") {
+                          setPrimarySource("sentinel-2-l2a");
+                          setDiffStats(null);
+                        }
                         setStacLandsat(null);
                         setSecondaryWarning(null);
                       }}
@@ -792,7 +836,7 @@ export function GeoProofApp() {
                     afterTileUrlTemplate={stacS2.after.tileUrlTemplate ?? null}
                     tileZoom={tileZoom}
                     threshold={threshold}
-                    onComputed={variant === "closest" ? setDiffStats : undefined}
+                    onComputed={primarySource === "sentinel-2-l2a" && variant === "closest" ? setDiffStats : undefined}
                   />
                 </div>
 
@@ -808,7 +852,7 @@ export function GeoProofApp() {
                     afterTileUrlTemplate={(stacS2.afterClear ?? stacS2.after).tileUrlTemplate ?? null}
                     tileZoom={tileZoom}
                     threshold={threshold}
-                    onComputed={variant === "clearest" ? setDiffStats : undefined}
+                    onComputed={primarySource === "sentinel-2-l2a" && variant === "clearest" ? setDiffStats : undefined}
                   />
                 </div>
               </div>
@@ -833,6 +877,7 @@ export function GeoProofApp() {
                       afterTileUrlTemplate={stacLandsat.after.tileUrlTemplate ?? null}
                       tileZoom={tileZoom}
                       threshold={threshold}
+                      onComputed={primarySource === "landsat-c2-l2" && variant === "closest" ? setDiffStats : undefined}
                     />
                   </div>
 
@@ -848,6 +893,7 @@ export function GeoProofApp() {
                       afterTileUrlTemplate={(stacLandsat.afterClear ?? stacLandsat.after).tileUrlTemplate ?? null}
                       tileZoom={tileZoom}
                       threshold={threshold}
+                      onComputed={primarySource === "landsat-c2-l2" && variant === "clearest" ? setDiffStats : undefined}
                     />
                   </div>
                 </div>
