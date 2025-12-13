@@ -16,6 +16,13 @@ type StacFeature = {
   assets?: Record<string, { href?: string }>;
 };
 
+function normalizeBbox(bbox: number[] | undefined): BBox | null {
+  if (!bbox || bbox.length !== 4) return null;
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  if (![minLng, minLat, maxLng, maxLat].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  return [minLng, minLat, maxLng, maxLat];
+}
+
 function parseUtcDateMs(date: string): number {
   // Interpret YYYY-MM-DD as UTC to avoid local timezone surprises.
   return new Date(`${date}T00:00:00Z`).getTime();
@@ -128,7 +135,7 @@ export async function POST(req: Request) {
       datetime: dt,
       cloudCover,
       previewUrl,
-      bbox: f.bbox ?? null,
+      bbox: normalizeBbox(f.bbox),
     };
   };
 

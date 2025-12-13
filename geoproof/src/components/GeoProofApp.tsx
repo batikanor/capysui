@@ -10,7 +10,7 @@ type StacPicked = {
   datetime: string | null;
   cloudCover: number | null;
   previewUrl: string | null;
-  bbox: number[] | null;
+  bbox: BBox | null;
 };
 
 type StacResponse = {
@@ -530,6 +530,10 @@ export function GeoProofApp() {
             {stac ? (
               <div className="rounded-xl border border-zinc-200 bg-white p-4">
                 <div className="mb-2 text-sm font-medium text-zinc-900">Selected imagery (Sentinel-2 L2A)</div>
+                <div className="mb-3 text-xs text-zinc-500">
+                  Note: Planetary Computer previews are for the full Sentinel-2 granule; we crop them to your selected bbox
+                  using the item bbox (approx) so the before/after/diff is scoped to your region.
+                </div>
                 <div className="grid gap-3 text-xs text-zinc-700 md:grid-cols-2">
                   <div className="rounded-lg border border-zinc-100 bg-zinc-50 p-3">
                     <div className="mb-1 font-medium text-zinc-900">Before</div>
@@ -551,6 +555,9 @@ export function GeoProofApp() {
             <DiffViewer
               beforeUrl={beforeUrl}
               afterUrl={afterUrl}
+              selectionBbox={effectiveBbox}
+              beforeItemBbox={stac?.before.bbox ?? null}
+              afterItemBbox={stac?.after.bbox ?? null}
               threshold={threshold}
               onComputed={setDiffStats}
             />

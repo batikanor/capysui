@@ -9,9 +9,14 @@ export type DiffStats = {
   changedPercent: number; // 0..100
 };
 
+type BBox = [number, number, number, number];
+
 type Props = {
   beforeUrl: string | null;
   afterUrl: string | null;
+  beforeItemBbox?: BBox | null;
+  afterItemBbox?: BBox | null;
+  selectionBbox?: BBox | null;
   threshold: number; // 0..255
   onComputed?: (stats: DiffStats | null) => void;
 };
@@ -26,16 +31,73 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
-export function DiffViewer({ beforeUrl, afterUrl, threshold, onComputed }: Props) {
+function cropRectForBboxes(
+  img: HTMLImageElement,
+  itemBbox: BBox | null | undefined,
+  selectionBbox: BBox | null | undefined,
+): { sx: number; sy: number; sw: number; sh: number } {
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!itemBbox || !selectionBbox) return { sx: 0, sy: 0, sw: w, sh: h };
+
+  const [iMinLng, iMinLat, iMaxLng, iMaxLat] = itemBbox;
+  const [sMinLng, sMinLat, sMaxLng, sMaxLat] = selectionBbox;
+
+  const denomLng = iMaxLng - iMinLng;
+  const denomLat = iMaxLat - iMinLat;
+  if (!(denomLng > 0) || !(denomLat > 0)) return { sx: 0, sy: 0, sw: w, sh: h };
+
+  // Map lon/lat bbox to pixel rect. y axis is inverted.
+  const x0 = ((sMinLng - iMinLng) / denomLng) * w;
+  const x1 = ((sMaxLng - iMinLng) / denomLng) * w;
+  const y0 = ((iMaxLat - sMaxLat) / denomLat) * h;
+  const y1 = ((iMaxLat - sMinLat) / denomLat) * h;
+
+  const sx = Math.max(0, Math.min(x0, x1));
+  const ex = Math.min(w, Math.max(x0, x1));
+  const sy = Math.max(0, Math.min(y0, y1));
+  const ey = Math.min(h, Math.max(y0, y1));
+
+  const sw = Math.max(1, ex - sx);
+  const sh = Math.max(1, ey - sy);
+  return { sx, sy, sw, sh };
+}
+
+export function DiffViewer({
+  beforeUrl,
+  afterUrl,
+  beforeItemBbox,
+  afterItemBbox,
+  selectionBbox,
+  threshold,
+  onComputed,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [state, setState] = useState<{ key: string; diffUrl: string | null; error: string | null }>({
+  const [state, setState] = useState<{
+    key: string;
+    diffUrl: string | null;
+    beforeCroppedUrl: string | null;
+    afterCroppedUrl: string | null;
+    error: string | null;
+  }>({
     key: "",
     diffUrl: null,
+    beforeCroppedUrl: null,
+    afterCroppedUrl: null,
     error: null,
   });
 
-  const key = useMemo(() => `${beforeUrl ?? ""}|${afterUrl ?? ""}|${threshold}`, [beforeUrl, afterUrl, threshold]);
-  const inputs = useMemo(() => ({ beforeUrl, afterUrl, threshold, key }), [beforeUrl, afterUrl, threshold, key]);
+  const key = useMemo(
+    () =>
+      `${beforeUrl ?? ""}|${afterUrl ?? ""}|${threshold}|${selectionBbox?.join(",") ?? ""}|${
+        beforeItemBbox?.join(",") ?? ""
+      }|${afterItemBbox?.join(",") ?? ""}`,
+    [beforeUrl, afterUrl, threshold, selectionBbox, beforeItemBbox, afterItemBbox],
+  );
+  const inputs = useMemo(
+    () => ({ beforeUrl, afterUrl, threshold, key, beforeItemBbox, afterItemBbox, selectionBbox }),
+    [beforeUrl, afterUrl, threshold, key, beforeItemBbox, afterItemBbox, selectionBbox],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -54,10 +116,15 @@ export function DiffViewer({ beforeUrl, afterUrl, threshold, onComputed }: Props
 
         if (cancelled) return;
 
+        const cropA = cropRectForBboxes(before, inputs.beforeItemBbox, inputs.selectionBbox);
+        const cropB = cropRectForBboxes(after, inputs.afterItemBbox, inputs.selectionBbox);
+
         const maxW = 640;
-        const scale = Math.min(1, maxW / Math.max(before.naturalWidth, after.naturalWidth));
-        const w = Math.floor(Math.min(before.naturalWidth, after.naturalWidth) * scale);
-        const h = Math.floor(Math.min(before.naturalHeight, after.naturalHeight) * scale);
+        const baseW = Math.min(cropA.sw, cropB.sw);
+        const baseH = Math.min(cropA.sh, cropB.sh);
+        const scale = Math.min(1, maxW / Math.max(baseW, 1));
+        const w = Math.max(1, Math.floor(baseW * scale));
+        const h = Math.max(1, Math.floor(baseH * scale));
 
         canvas.width = w;
         canvas.height = h;
@@ -71,12 +138,16 @@ export function DiffViewer({ beforeUrl, afterUrl, threshold, onComputed }: Props
         if (!tctx) return;
 
         tctx.clearRect(0, 0, w, h);
-        tctx.drawImage(before, 0, 0, w, h);
+        tctx.drawImage(before, cropA.sx, cropA.sy, cropA.sw, cropA.sh, 0, 0, w, h);
         const a = tctx.getImageData(0, 0, w, h);
 
+        const beforeThumbUrl = tmp.toDataURL("image/png");
+
         tctx.clearRect(0, 0, w, h);
-        tctx.drawImage(after, 0, 0, w, h);
+        tctx.drawImage(after, cropB.sx, cropB.sy, cropB.sw, cropB.sh, 0, 0, w, h);
         const b = tctx.getImageData(0, 0, w, h);
+
+        const afterThumbUrl = tmp.toDataURL("image/png");
 
         const out = ctx.createImageData(w, h);
         const ad = a.data;
@@ -116,11 +187,19 @@ export function DiffViewer({ beforeUrl, afterUrl, threshold, onComputed }: Props
 
         onComputed?.(stats);
         const url = canvas.toDataURL("image/png");
-        if (!cancelled) setState({ key: inputs.key, diffUrl: url, error: null });
+        if (!cancelled) {
+          setState({
+            key: inputs.key,
+            diffUrl: url,
+            beforeCroppedUrl: beforeThumbUrl,
+            afterCroppedUrl: afterThumbUrl,
+            error: null,
+          });
+        }
       } catch (e: unknown) {
         if (cancelled) return;
         const msg = e instanceof Error ? e.message : String(e);
-        setState({ key: inputs.key, diffUrl: null, error: msg });
+        setState({ key: inputs.key, diffUrl: null, beforeCroppedUrl: null, afterCroppedUrl: null, error: msg });
       }
     }
 
@@ -134,6 +213,8 @@ export function DiffViewer({ beforeUrl, afterUrl, threshold, onComputed }: Props
 
   const diffUrl = state.key === key ? state.diffUrl : null;
   const error = state.key === key ? state.error : null;
+  const beforeShownUrl = state.key === key ? state.beforeCroppedUrl ?? beforeUrl : beforeUrl;
+  const afterShownUrl = state.key === key ? state.afterCroppedUrl ?? afterUrl : afterUrl;
 
   return (
     <div className="space-y-3">
@@ -142,7 +223,7 @@ export function DiffViewer({ beforeUrl, afterUrl, threshold, onComputed }: Props
           <div className="mb-2 text-xs font-medium text-zinc-700">Before</div>
           <img
             className="h-auto w-full rounded-lg border border-zinc-100"
-            src={beforeUrl}
+            src={beforeShownUrl}
             alt="Before preview"
           />
         </div>
@@ -150,7 +231,7 @@ export function DiffViewer({ beforeUrl, afterUrl, threshold, onComputed }: Props
           <div className="mb-2 text-xs font-medium text-zinc-700">After</div>
           <img
             className="h-auto w-full rounded-lg border border-zinc-100"
-            src={afterUrl}
+            src={afterShownUrl}
             alt="After preview"
           />
         </div>
@@ -159,7 +240,7 @@ export function DiffViewer({ beforeUrl, afterUrl, threshold, onComputed }: Props
           <div className="relative">
             <img
               className="h-auto w-full rounded-lg border border-zinc-100"
-              src={afterUrl}
+              src={afterShownUrl}
               alt="After base"
             />
             {diffUrl ? (
