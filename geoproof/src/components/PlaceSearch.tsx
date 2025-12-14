@@ -80,12 +80,12 @@ export function PlaceSearch({ label, placeholder, value, onChange }: Props) {
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <label className="text-xs font-medium text-zinc-700">{label}</label>
+        <label className="text-xs font-medium text-zinc-300">{label}</label>
         {value ? (
           <button
             type="button"
             onClick={() => onChange(null)}
-            className="text-xs font-medium text-zinc-500 hover:text-zinc-800"
+            className="text-xs font-medium text-zinc-400 hover:text-zinc-100"
           >
             Clear
           </button>
@@ -104,14 +104,14 @@ export function PlaceSearch({ label, placeholder, value, onChange }: Props) {
             window.setTimeout(() => setOpen(false), 120);
           }}
           placeholder={placeholder}
-          className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
         />
 
         {open ? (
-          <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-lg border border-zinc-200 bg-white shadow">
-            <div className="flex items-center justify-between border-b border-zinc-100 px-3 py-2 text-xs text-zinc-500">
+          <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 shadow">
+            <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2 text-xs text-zinc-500">
               <span>{loading ? "Searching…" : `${results.length} results`}</span>
-              {error ? <span className="text-red-600">{error}</span> : null}
+              {error ? <span className="text-red-300">{error}</span> : null}
             </div>
             <ul className="max-h-56 overflow-auto">
               {results.map((r, idx) => (
@@ -124,7 +124,7 @@ export function PlaceSearch({ label, placeholder, value, onChange }: Props) {
                       setQuery(r.displayName);
                       setOpen(false);
                     }}
-                    className="block w-full px-3 py-2 text-left text-sm text-zinc-900 hover:bg-zinc-50"
+                    className="block w-full px-3 py-2 text-left text-sm text-zinc-100 hover:bg-zinc-900"
                     title={r.displayName}
                   >
                     <div className="whitespace-normal leading-5">{r.displayName}</div>

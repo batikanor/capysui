@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DiffViewer, type DiffStats } from "./DiffViewer";
 import { MapPicker, type BBox, type BaseLayer, type PointMarker } from "./MapPicker";
 import { PlaceSearch, type PlaceResult } from "./PlaceSearch";
@@ -34,7 +34,32 @@ type StacResponse = {
 };
 
 type Variant = "closest" | "clearest";
-type PrimarySource = "sentinel-2-l2a" | "landsat-c2-l2";
+type PrimarySource = "wayback" | "sentinel-2-l2a" | "landsat-c2-l2";
+
+type WaybackPicked = {
+  id: number;
+  date: string;
+  title: string;
+  tileUrlTemplate: string;
+};
+
+type WaybackOptionsResponse = {
+  query: { bbox: BBox; zoom: number; tile: { x: number; y: number; z: number } };
+  options: WaybackPicked[];
+  suggested: { beforeId: number; afterId: number };
+  error?: string;
+};
+
+type WaybackState = {
+  query: WaybackOptionsResponse["query"];
+  options: WaybackPicked[];
+  beforeId: number;
+  afterId: number;
+};
+
+function clampInt(n: number, min: number, max: number) {
+  return Math.min(Math.max(Math.round(n), min), max);
+}
 
 function pickVariant(stac: StacResponse, v: Variant) {
   if (v === "clearest") {
@@ -87,7 +112,8 @@ export function GeoProofApp() {
   const [mode, setMode] = useState<SelectionMode>("bbox");
 
   // Mode: bbox-corners
-  const [bbox, setBbox] = useState<BBox | null>([16.9, 51.0, 17.2, 51.2]);
+  // Default selection: Flughafen Berlin Brandenburg (BER)
+  const [bbox, setBbox] = useState<BBox | null>([13.37, 52.31, 13.63, 52.46]);
   const [bboxAnchor, setBboxAnchor] = useState<[number, number] | null>(null);
 
   // Mode: center+radius
@@ -108,19 +134,92 @@ export function GeoProofApp() {
   const [error, setError] = useState<string | null>(null);
   const [stacS2, setStacS2] = useState<StacResponse | null>(null);
   const [stacLandsat, setStacLandsat] = useState<StacResponse | null>(null);
+  const [wayback, setWayback] = useState<WaybackState | null>(null);
   const [secondaryWarning, setSecondaryWarning] = useState<string | null>(null);
 
   const [variant, setVariant] = useState<Variant>("clearest");
-  const [primarySource, setPrimarySource] = useState<PrimarySource>("sentinel-2-l2a");
+  const [primarySource, setPrimarySource] = useState<PrimarySource>("wayback");
   const [maxCloudOffsetDays, setMaxCloudOffsetDays] = useState<number>(14);
   const [showSecondary, setShowSecondary] = useState<boolean>(true);
+  const [showWayback, setShowWayback] = useState<boolean>(true);
+
+  const [ignoreClouds, setIgnoreClouds] = useState<boolean>(true);
+  const [ignoreDark, setIgnoreDark] = useState<boolean>(false);
 
   const [threshold, setThreshold] = useState<number>(40);
   const [diffStats, setDiffStats] = useState<DiffStats | null>(null);
+  const [primaryArtifacts, setPrimaryArtifacts] = useState<
+    { beforeDataUrl: string; afterDataUrl: string; diffDataUrl: string } | null
+  >(null);
+
+  const [publishLoading, setPublishLoading] = useState<boolean>(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishResult, setPublishResult] = useState<unknown | null>(null);
 
   const [tileZoom, setTileZoom] = useState<number>(16);
 
+  // Draft indices for sliders to avoid re-running expensive tile diffs on every drag tick.
+  const [wbDraftBeforeIdx, setWbDraftBeforeIdx] = useState<number | null>(null);
+  const [wbDraftAfterIdx, setWbDraftAfterIdx] = useState<number | null>(null);
+
+  const waybackPicked = useMemo(() => {
+    if (!wayback) return null;
+    const before = wayback.options.find((o) => o.id === wayback.beforeId) ?? wayback.options[0];
+    const after =
+      wayback.options.find((o) => o.id === wayback.afterId) ?? wayback.options[wayback.options.length - 1];
+    if (!before || !after) return null;
+    return { before, after };
+  }, [wayback]);
+
+  const waybackIndices = useMemo(() => {
+    if (!wayback) return null;
+    const beforeIndex = Math.max(
+      0,
+      wayback.options.findIndex((o) => o.id === wayback.beforeId),
+    );
+    const afterIndex = Math.max(
+      0,
+      wayback.options.findIndex((o) => o.id === wayback.afterId),
+    );
+    return { beforeIndex, afterIndex, max: Math.max(0, wayback.options.length - 1) };
+  }, [wayback]);
+
+  // Keep draft slider positions in sync when we load a new Wayback timeline.
+  useEffect(() => {
+    if (!wayback) {
+      setWbDraftBeforeIdx(null);
+      setWbDraftAfterIdx(null);
+      return;
+    }
+    const beforeIdx = Math.max(0, wayback.options.findIndex((o) => o.id === wayback.beforeId));
+    const afterIdx = Math.max(0, wayback.options.findIndex((o) => o.id === wayback.afterId));
+    setWbDraftBeforeIdx(beforeIdx);
+    setWbDraftAfterIdx(afterIdx);
+  }, [wayback]);
+
+  // Debounce committing slider changes into the "real" beforeId/afterId.
+  useEffect(() => {
+    if (!wayback || wbDraftBeforeIdx == null || wbDraftAfterIdx == null) return;
+    const t = setTimeout(() => {
+      const max = wayback.options.length - 1;
+      const beforeIdx = clampInt(wbDraftBeforeIdx, 0, max);
+      const afterIdx = clampInt(wbDraftAfterIdx, 0, max);
+      const safeBefore = Math.min(beforeIdx, Math.max(0, afterIdx - 1));
+      const safeAfter = Math.max(afterIdx, Math.min(max, safeBefore + 1));
+      const before = wayback.options[safeBefore];
+      const after = wayback.options[safeAfter];
+      if (!before || !after) return;
+
+      setWayback((prev) => (prev ? { ...prev, beforeId: before.id, afterId: after.id } : prev));
+      setStartDate(before.date);
+      setEndDate(after.date);
+      setDiffStats(null);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [wayback, wbDraftBeforeIdx, wbDraftAfterIdx]);
+
   const primary = useMemo(() => {
+    if (primarySource === "wayback") return null;
     if (primarySource === "landsat-c2-l2") return stacLandsat ?? stacS2;
     return stacS2;
   }, [primarySource, stacLandsat, stacS2]);
@@ -160,7 +259,39 @@ export function GeoProofApp() {
   }, [mode, fromCoord, toCoord]);
 
   const reportDraft = useMemo(() => {
-    if (!effectiveBbox || !primary || !primaryPicked || !diffStats) return null;
+    if (!effectiveBbox || !diffStats) return null;
+
+    if (primarySource === "wayback") {
+      if (!wayback || !waybackPicked) return null;
+      return {
+        type: "GeoProofChangeReportDraft",
+        version: 1,
+        createdAt: new Date().toISOString(),
+        bbox: effectiveBbox,
+        window: { startDate, endDate },
+        collection: "esri-world-imagery-wayback",
+        imagery: {
+          sourceRequested: primarySource,
+          sourceUsed: "esri-world-imagery-wayback",
+          variant: "closest",
+          before: waybackPicked.before,
+          after: waybackPicked.after,
+        },
+        diff: {
+          threshold,
+          meanDiff: diffStats.meanDiff,
+          changedPercent: diffStats.changedPercent,
+          width: diffStats.width,
+          height: diffStats.height,
+        },
+        publish: {
+          walrus: "TODO",
+          sui: "TODO",
+        },
+      };
+    }
+
+    if (!primary || !primaryPicked) return null;
     return {
       type: "GeoProofChangeReportDraft",
       version: 1,
@@ -187,13 +318,17 @@ export function GeoProofApp() {
         sui: "TODO",
       },
     };
-  }, [effectiveBbox, primary, primaryPicked, diffStats, startDate, endDate, threshold, variant, primarySource]);
+  }, [effectiveBbox, primary, primaryPicked, diffStats, startDate, endDate, threshold, variant, primarySource, wayback, waybackPicked]);
 
   const runSearch = useCallback(async () => {
     setError(null);
     setStacS2(null);
     setStacLandsat(null);
+    setWayback(null);
     setDiffStats(null);
+    setPrimaryArtifacts(null);
+    setPublishError(null);
+    setPublishResult(null);
     setSecondaryWarning(null);
 
     if (!effectiveBbox) {
@@ -209,13 +344,63 @@ export function GeoProofApp() {
 
     setLoading(true);
     try {
+      let windowStart = startDate;
+      let windowEnd = endDate;
+
+      // 1) Resolve Wayback availability first so we can use its timeline as the canonical time range.
+      if (showWayback) {
+        try {
+          const resWb = await fetch("/api/wayback/options", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ bbox: effectiveBbox, zoom: tileZoom, limit: 60 }),
+          });
+          const rawWb = (await resWb.json()) as unknown;
+          if (resWb.ok) {
+            const data = rawWb as WaybackOptionsResponse;
+            const beforeId = data.suggested?.beforeId ?? data.options?.[0]?.id;
+            const afterId = data.suggested?.afterId ?? data.options?.[data.options.length - 1]?.id;
+            if (beforeId == null || afterId == null || !Array.isArray(data.options) || data.options.length === 0) {
+              setSecondaryWarning((prev) =>
+                prev ? `${prev}\nWayback response missing options.` : "Wayback response missing options.",
+              );
+            } else {
+              const wbState: WaybackState = { query: data.query, options: data.options, beforeId, afterId };
+              setWayback(wbState);
+
+              const before = data.options.find((o) => o.id === beforeId) ?? data.options[0];
+              const after =
+                data.options.find((o) => o.id === afterId) ?? data.options[data.options.length - 1];
+              if (before?.date && after?.date) {
+                windowStart = before.date;
+                windowEnd = after.date;
+              }
+            }
+          } else {
+            const msg =
+              typeof rawWb === "object" && rawWb !== null && typeof (rawWb as { error?: unknown }).error === "string"
+                ? (rawWb as { error: string }).error
+                : `Wayback request failed: ${resWb.status}`;
+            setSecondaryWarning((prev) => (prev ? `${prev}\n${msg}` : msg));
+          }
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setSecondaryWarning((prev) => (prev ? `${prev}\nWayback request error: ${msg}` : `Wayback request error: ${msg}`));
+        }
+      }
+
+      // Keep internal window in sync (used by STAC + report draft).
+      setStartDate(windowStart);
+      setEndDate(windowEnd);
+
+      // 2) Fetch STAC using the canonical window.
       const s2Promise = fetch("/api/stac/search", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             bbox: effectiveBbox,
-            startDate,
-            endDate,
+            startDate: windowStart,
+            endDate: windowEnd,
             collection: "sentinel-2-l2a",
             maxCloudOffsetDays,
           }),
@@ -227,17 +412,20 @@ export function GeoProofApp() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               bbox: effectiveBbox,
-              startDate,
-              endDate,
+              startDate: windowStart,
+              endDate: windowEnd,
               collection: "landsat-c2-l2",
               maxCloudOffsetDays,
             }),
           })
         : null;
 
-      const results = await Promise.allSettled([s2Promise, ...(lsPromise ? [lsPromise] : [])]);
+      const promises: Promise<Response>[] = [s2Promise];
+      if (lsPromise) promises.push(lsPromise);
+      const results = await Promise.allSettled(promises);
+
       const s2 = results[0];
-      const ls = results.length > 1 ? results[1] : null;
+      const ls = lsPromise ? results[1] : null;
 
       if (s2.status !== "fulfilled") {
         setError(`Sentinel-2 request error: ${String(s2.reason)}`);
@@ -274,21 +462,26 @@ export function GeoProofApp() {
           setSecondaryWarning(`Landsat request error: ${String(ls.reason)}`);
         }
       }
+
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
     } finally {
       setLoading(false);
     }
-  }, [effectiveBbox, mode, startDate, endDate, maxCloudOffsetDays, showSecondary]);
+  }, [effectiveBbox, mode, startDate, endDate, maxCloudOffsetDays, showSecondary, showWayback, tileZoom]);
 
   const onMapClick = useCallback(
     (coord: [number, number]) => {
       setError(null);
       setStacS2(null);
       setStacLandsat(null);
+      setWayback(null);
       setSecondaryWarning(null);
       setDiffStats(null);
+      setPrimaryArtifacts(null);
+      setPublishError(null);
+      setPublishResult(null);
 
       if (mode === "bbox") {
         if (!bboxAnchor) {
@@ -327,15 +520,46 @@ export function GeoProofApp() {
     [mode, bboxAnchor, fromCoord, toCoord],
   );
 
-  const inputClassName =
-    "w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20";
+  const doPublish = useCallback(async () => {
+    if (!reportDraft) return;
+    setPublishError(null);
+    setPublishResult(null);
+    setPublishLoading(true);
+    try {
+      const res = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reportDraft,
+          artifacts: primaryArtifacts ?? undefined,
+        }),
+      });
+
+      const raw = (await res.json()) as unknown;
+      if (!res.ok) {
+        const msg =
+          typeof raw === "object" && raw !== null && typeof (raw as { error?: unknown }).error === "string"
+            ? (raw as { error: string }).error
+            : `Publish failed: ${res.status}`;
+        setPublishError(msg);
+        setPublishResult(raw);
+        return;
+      }
+      setPublishResult(raw);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPublishError(msg);
+    } finally {
+      setPublishLoading(false);
+    }
+  }, [primaryArtifacts, reportDraft]);
 
   return (
-    <div className="min-h-screen bg-zinc-50">
+    <div className="min-h-screen bg-zinc-950">
       <div className="mx-auto max-w-6xl px-4 py-10">
         <div className="mb-8 flex flex-col gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">GeoProof</h1>
-          <p className="text-sm text-zinc-600">
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">GeoProof</h1>
+          <p className="text-sm text-zinc-300">
             Verifiable satellite change reports (MVP). Pick a bounding box, choose a time window, then compute a simple
             pixel-diff change mask.
           </p>
@@ -346,11 +570,11 @@ export function GeoProofApp() {
 
         <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
           <div className="space-y-4">
-            <div className="rounded-xl border border-zinc-200 bg-white p-4">
-              <div className="mb-3 text-sm font-medium text-zinc-900">1) Select region + time window</div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+              <div className="mb-3 text-sm font-medium text-zinc-100">1) Select region + time window</div>
 
               <div className="mb-3">
-                <div className="mb-1 text-xs font-medium text-zinc-700">Region selection</div>
+                <div className="mb-1 text-xs font-medium text-zinc-300">Region selection</div>
                 <div className="grid grid-cols-3 gap-2">
                   <button
                     type="button"
@@ -371,8 +595,8 @@ export function GeoProofApp() {
                     }}
                     className={`h-9 rounded-lg border px-2 text-sm font-medium ${
                       mode === "bbox"
-                        ? "border-zinc-900 bg-zinc-900 text-white"
-                        : "border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50"
+                        ? "border-zinc-100 bg-zinc-100 text-zinc-950"
+                        : "border-zinc-800 bg-zinc-900 text-zinc-100 hover:bg-zinc-800"
                     }`}
                   >
                     Box
@@ -394,8 +618,8 @@ export function GeoProofApp() {
                     }}
                     className={`h-9 rounded-lg border px-2 text-sm font-medium ${
                       mode === "radius"
-                        ? "border-zinc-900 bg-zinc-900 text-white"
-                        : "border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50"
+                        ? "border-zinc-100 bg-zinc-100 text-zinc-950"
+                        : "border-zinc-800 bg-zinc-900 text-zinc-100 hover:bg-zinc-800"
                     }`}
                   >
                     Place + radius
@@ -419,8 +643,8 @@ export function GeoProofApp() {
                     }}
                     className={`h-9 rounded-lg border px-2 text-sm font-medium ${
                       mode === "fromTo"
-                        ? "border-zinc-900 bg-zinc-900 text-white"
-                        : "border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50"
+                        ? "border-zinc-100 bg-zinc-100 text-zinc-950"
+                        : "border-zinc-800 bg-zinc-900 text-zinc-100 hover:bg-zinc-800"
                     }`}
                   >
                     From → To
@@ -450,7 +674,7 @@ export function GeoProofApp() {
                   />
 
                   <div>
-                    <div className="mb-1 text-xs font-medium text-zinc-700">Radius (km)</div>
+                    <div className="mb-1 text-xs font-medium text-zinc-300">Radius (km)</div>
                     <div className="flex items-center gap-3">
                       <input
                         type="range"
@@ -470,7 +694,7 @@ export function GeoProofApp() {
                           const v = Number(e.target.value);
                           if (Number.isFinite(v)) setRadiusKm(v);
                         }}
-                        className="w-20 rounded-lg border border-zinc-200 bg-white px-2 py-2 text-right font-mono text-xs text-zinc-900"
+                        className="w-20 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-2 text-right font-mono text-xs text-zinc-100"
                       />
                     </div>
                     <div className="mt-1 text-xs text-zinc-500">Tip: very small radii work best with higher tile zoom.</div>
@@ -509,34 +733,118 @@ export function GeoProofApp() {
                 </div>
               ) : null}
 
-              <label className="block text-xs font-medium text-zinc-700">Time window</label>
-              <div className="mt-2 grid grid-cols-2 gap-3">
-                <div>
-                  <div className="mb-1 text-xs text-zinc-600">Start</div>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className={inputClassName}
-                  />
+              <label className="block text-xs font-medium text-zinc-300">Time window</label>
+              <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                <div className="text-xs font-medium text-zinc-100">Time window (Wayback timeline)</div>
+                <div className="mt-1 text-xs text-zinc-400">
+                  Instead of typing dates, you pick two Wayback snapshots. We use that same window for Sentinel/Landsat
+                  too.
                 </div>
-                <div>
-                  <div className="mb-1 text-xs text-zinc-600">End</div>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className={inputClassName}
-                  />
-                </div>
+
+                {showWayback && wayback && waybackIndices && waybackPicked && wbDraftBeforeIdx != null && wbDraftAfterIdx != null ? (
+                  <div className="mt-3 grid gap-3">
+                    <div className="grid gap-2">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                        <div>
+                          Before: <span className="font-mono text-zinc-200">{waybackPicked.before.date}</span>
+                        </div>
+                        <div className="font-mono text-zinc-500">
+                          {waybackIndices.beforeIndex + 1}/{wayback.options.length}
+                        </div>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={waybackIndices.max}
+                        step={1}
+                        value={wbDraftBeforeIdx}
+                        onChange={(e) => {
+                          const idx = clampInt(Number(e.target.value), 0, waybackIndices.max);
+                          const safeIdx = Math.min(idx, Math.max(0, wbDraftAfterIdx - 1));
+                          setWbDraftBeforeIdx(safeIdx);
+                        }}
+                        className="w-full"
+                      />
+                    </div>
+
+                    <div className="grid gap-2">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                        <div>
+                          After: <span className="font-mono text-zinc-200">{waybackPicked.after.date}</span>
+                        </div>
+                        <div className="font-mono text-zinc-500">
+                          {waybackIndices.afterIndex + 1}/{wayback.options.length}
+                        </div>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={waybackIndices.max}
+                        step={1}
+                        value={wbDraftAfterIdx}
+                        onChange={(e) => {
+                          const idx = clampInt(Number(e.target.value), 0, waybackIndices.max);
+                          const safeIdx = Math.max(idx, Math.min(waybackIndices.max, wbDraftBeforeIdx + 1));
+                          setWbDraftAfterIdx(safeIdx);
+                        }}
+                        className="w-full"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const first = wayback.options[0];
+                          if (!first) return;
+                          setWbDraftBeforeIdx(0);
+                        }}
+                        className="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200"
+                      >
+                        Oldest
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const last = wayback.options[wayback.options.length - 1];
+                          if (!last) return;
+                          setWbDraftAfterIdx(wayback.options.length - 1);
+                        }}
+                        className="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200"
+                      >
+                        Newest
+                      </button>
+                      <div className="ml-auto text-[11px] text-zinc-500">
+                        Window: <span className="font-mono">{startDate}</span> → <span className="font-mono">{endDate}</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-xs text-zinc-500">
+                    Click <span className="font-medium text-zinc-300">Find imagery</span> to load the Wayback timeline
+                    for your selected area.
+                  </div>
+                )}
               </div>
 
-              <div className="mt-3 rounded-xl border border-zinc-200 bg-white p-3">
-                <div className="text-xs font-medium text-zinc-900">Cloud handling + sources</div>
-                <div className="mt-2 grid gap-2 text-xs text-zinc-700">
+              <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                <div className="text-xs font-medium text-zinc-100">Cloud handling + sources</div>
+                <div className="mt-2 grid gap-2 text-xs text-zinc-200">
                   <div className="mt-1">
-                    <div className="mb-1 text-xs font-medium text-zinc-700">Primary source for report (scaffold)</div>
+                    <div className="mb-1 text-xs font-medium text-zinc-300">Primary source for report (scaffold)</div>
                     <div className="flex flex-wrap gap-3">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="primarySource"
+                          checked={primarySource === "wayback"}
+                          onChange={() => {
+                            setPrimarySource("wayback");
+                            setDiffStats(null);
+                          }}
+                        />
+                        Wayback (cloud-free)
+                      </label>
                       <label className="flex items-center gap-2">
                         <input
                           type="radio"
@@ -565,11 +873,40 @@ export function GeoProofApp() {
                     </div>
                   </div>
 
+                  <div className="mt-1">
+                    <div className="mb-1 text-xs font-medium text-zinc-300">Masking for diff</div>
+                    <div className="flex flex-wrap gap-3">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={ignoreClouds}
+                          onChange={(e) => {
+                            setIgnoreClouds(e.target.checked);
+                            setDiffStats(null);
+                          }}
+                        />
+                        Ignore cloud-like pixels
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={ignoreDark}
+                          onChange={(e) => {
+                            setIgnoreDark(e.target.checked);
+                            setDiffStats(null);
+                          }}
+                        />
+                        Ignore very-dark pixels
+                      </label>
+                    </div>
+                  </div>
+
                   <label className="flex items-center gap-2">
                     <input
                       type="radio"
                       name="variant"
                       checked={variant === "closest"}
+                      disabled={primarySource === "wayback"}
                       onChange={() => {
                         setVariant("closest");
                         setDiffStats(null);
@@ -582,6 +919,7 @@ export function GeoProofApp() {
                       type="radio"
                       name="variant"
                       checked={variant === "clearest"}
+                      disabled={primarySource === "wayback"}
                       onChange={() => {
                         setVariant("clearest");
                         setDiffStats(null);
@@ -591,7 +929,7 @@ export function GeoProofApp() {
                   </label>
 
                   <div className="mt-1">
-                    <div className="mb-1 text-xs font-medium text-zinc-700">Clearest search window (days)</div>
+                    <div className="mb-1 text-xs font-medium text-zinc-300">Clearest search window (days)</div>
                     <div className="flex items-center gap-3">
                       <input
                         type="range"
@@ -599,12 +937,30 @@ export function GeoProofApp() {
                         max={45}
                         step={1}
                         value={maxCloudOffsetDays}
+                        disabled={primarySource === "wayback"}
                         onChange={(e) => setMaxCloudOffsetDays(Number(e.target.value))}
                         className="w-full"
                       />
-                      <div className="w-10 text-right font-mono text-xs text-zinc-700">{maxCloudOffsetDays}</div>
+                      <div className="w-10 text-right font-mono text-xs text-zinc-300">{maxCloudOffsetDays}</div>
                     </div>
                   </div>
+
+                  <label className="mt-1 flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={showWayback}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setShowWayback(next);
+                        setWayback(null);
+                        if (!next && primarySource === "wayback") {
+                          setPrimarySource("sentinel-2-l2a");
+                          setDiffStats(null);
+                        }
+                      }}
+                    />
+                    Also fetch Wayback (cloud-free imagery)
+                  </label>
 
                   <label className="mt-1 flex items-center gap-2">
                     <input
@@ -630,7 +986,7 @@ export function GeoProofApp() {
                 <button
                   onClick={runSearch}
                   disabled={loading}
-                  className="inline-flex h-10 items-center justify-center rounded-lg bg-zinc-900 px-4 text-sm font-medium text-white disabled:opacity-50"
+                  className="inline-flex h-10 items-center justify-center rounded-lg bg-zinc-100 px-4 text-sm font-medium text-zinc-950 disabled:opacity-50"
                 >
                   {loading ? "Searching…" : "Find imagery"}
                 </button>
@@ -639,8 +995,12 @@ export function GeoProofApp() {
                     setError(null);
                     setStacS2(null);
                     setStacLandsat(null);
+                    setWayback(null);
                     setSecondaryWarning(null);
                     setDiffStats(null);
+                    setPrimaryArtifacts(null);
+                    setPublishError(null);
+                    setPublishResult(null);
 
                     if (mode === "bbox") {
                       setBbox(null);
@@ -657,15 +1017,15 @@ export function GeoProofApp() {
                     setFromPlace(null);
                     setToPlace(null);
                   }}
-                  className="inline-flex h-10 items-center justify-center rounded-lg border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-900"
+                  className="inline-flex h-10 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900 px-4 text-sm font-medium text-zinc-100"
                 >
                   Clear
                 </button>
               </div>
 
               {effectiveBbox ? (
-                <div className="mt-3 text-xs text-zinc-600">
-                  <div className="font-medium text-zinc-700">BBox</div>
+                <div className="mt-3 text-xs text-zinc-300">
+                  <div className="font-medium text-zinc-300">BBox</div>
                   <div className="font-mono">[{effectiveBbox.map((x) => x.toFixed(4)).join(", ")}]</div>
                 </div>
               ) : (
@@ -673,8 +1033,8 @@ export function GeoProofApp() {
               )}
             </div>
 
-            <div className="rounded-xl border border-zinc-200 bg-white p-4">
-              <div className="mb-3 text-sm font-medium text-zinc-900">2) Change mask sensitivity</div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+              <div className="mb-3 text-sm font-medium text-zinc-100">2) Change mask sensitivity</div>
               <div className="flex items-center gap-3">
                 <input
                   type="range"
@@ -684,28 +1044,28 @@ export function GeoProofApp() {
                   onChange={(e) => setThreshold(Number(e.target.value))}
                   className="w-full"
                 />
-                <div className="w-14 text-right font-mono text-xs text-zinc-700">{threshold}</div>
+                <div className="w-14 text-right font-mono text-xs text-zinc-300">{threshold}</div>
               </div>
               <div className="mt-2 text-xs text-zinc-500">Higher = fewer pixels considered “changed”.</div>
               {diffStats ? (
                 <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-lg border border-zinc-100 bg-zinc-50 p-2">
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
                     <div className="text-zinc-500">Mean diff</div>
-                    <div className="font-mono text-zinc-900">{diffStats.meanDiff.toFixed(2)}</div>
+                    <div className="font-mono text-zinc-100">{diffStats.meanDiff.toFixed(2)}</div>
                   </div>
-                  <div className="rounded-lg border border-zinc-100 bg-zinc-50 p-2">
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-2">
                     <div className="text-zinc-500">Changed</div>
-                    <div className="font-mono text-zinc-900">{diffStats.changedPercent.toFixed(2)}%</div>
+                    <div className="font-mono text-zinc-100">{diffStats.changedPercent.toFixed(2)}%</div>
                   </div>
                 </div>
               ) : null}
             </div>
 
-            <div className="rounded-xl border border-zinc-200 bg-white p-4">
-              <div className="mb-3 text-sm font-medium text-zinc-900">Output quality</div>
-              <div className="text-xs text-zinc-600">
-                We render before/after using Planetary Computer Sentinel-2 tiles. Higher zoom = sharper crops (and heavier
-                requests).
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+              <div className="mb-3 text-sm font-medium text-zinc-100">Output quality</div>
+              <div className="text-xs text-zinc-300">
+                We render before/after using tiled imagery (Planetary Computer or Wayback). Higher zoom = sharper crops
+                (and heavier requests).
               </div>
               <div className="mt-3 flex items-center gap-3">
                 <input
@@ -717,27 +1077,40 @@ export function GeoProofApp() {
                   onChange={(e) => setTileZoom(Number(e.target.value))}
                   className="w-full"
                 />
-                <div className="w-14 text-right font-mono text-xs text-zinc-700">z={tileZoom}</div>
+                <div className="w-14 text-right font-mono text-xs text-zinc-300">z={tileZoom}</div>
               </div>
               <div className="mt-2 text-xs text-zinc-500">
                 If the bbox is large, we may automatically zoom out to keep tile downloads reasonable.
               </div>
             </div>
 
-            <div className="rounded-xl border border-zinc-200 bg-white p-4">
-              <div className="mb-2 text-sm font-medium text-zinc-900">3) Publish (scaffold)</div>
-              <div className="text-xs text-zinc-600">
-                Next step: store evidence bundle on Walrus and anchor a `ChangeReport` on Sui. For now, we produce a
-                deterministic draft JSON.
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+              <div className="mb-2 text-sm font-medium text-zinc-100">3) Publish</div>
+              <div className="text-xs text-zinc-300">
+                Store an evidence bundle on Walrus and anchor a `ChangeReport` object on Sui testnet.
               </div>
               <button
-                disabled={!reportDraft}
-                className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-lg border border-zinc-200 bg-white text-sm font-medium text-zinc-900 disabled:opacity-50"
+                disabled={!reportDraft || publishLoading}
+                onClick={doPublish}
+                  className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-lg bg-zinc-100 text-sm font-medium text-zinc-950 disabled:opacity-50"
               >
-                Publish (coming next)
+                {publishLoading ? "Publishing…" : "Publish to Walrus + Sui"}
               </button>
+
+              {publishError ? (
+                <div className="mt-3 rounded-lg border border-red-900/40 bg-red-950/40 p-3 text-xs text-red-200">
+                  {publishError}
+                </div>
+              ) : null}
+
+              {publishResult ? (
+                <pre className="mt-3 max-h-64 overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-[11px] leading-4 text-zinc-100">
+                  {JSON.stringify(publishResult, null, 2)}
+                </pre>
+              ) : null}
+
               {reportDraft ? (
-                <pre className="mt-3 max-h-64 overflow-auto rounded-lg border border-zinc-100 bg-zinc-50 p-3 text-[11px] leading-4 text-zinc-800">
+                <pre className="mt-3 max-h-64 overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-[11px] leading-4 text-zinc-100">
                   {JSON.stringify(reportDraft, null, 2)}
                 </pre>
               ) : (
@@ -758,11 +1131,11 @@ export function GeoProofApp() {
             />
 
             {error ? (
-              <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div>
+              <div className="rounded-xl border border-red-900/40 bg-red-950/40 p-4 text-sm text-red-200">{error}</div>
             ) : null}
 
             {secondaryWarning ? (
-              <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-4 text-sm text-yellow-900">
+              <div className="rounded-xl border border-yellow-900/40 bg-yellow-950/40 p-4 text-sm text-yellow-100">
                 {secondaryWarning}
               </div>
             ) : null}
@@ -836,7 +1209,12 @@ export function GeoProofApp() {
                     afterTileUrlTemplate={stacS2.after.tileUrlTemplate ?? null}
                     tileZoom={tileZoom}
                     threshold={threshold}
+                    ignoreClouds={ignoreClouds}
+                    ignoreDark={ignoreDark}
                     onComputed={primarySource === "sentinel-2-l2a" && variant === "closest" ? setDiffStats : undefined}
+                    onArtifacts={
+                      primarySource === "sentinel-2-l2a" && variant === "closest" ? setPrimaryArtifacts : undefined
+                    }
                   />
                 </div>
 
@@ -852,7 +1230,54 @@ export function GeoProofApp() {
                     afterTileUrlTemplate={(stacS2.afterClear ?? stacS2.after).tileUrlTemplate ?? null}
                     tileZoom={tileZoom}
                     threshold={threshold}
+                    ignoreClouds={ignoreClouds}
+                    ignoreDark={ignoreDark}
                     onComputed={primarySource === "sentinel-2-l2a" && variant === "clearest" ? setDiffStats : undefined}
+                    onArtifacts={
+                      primarySource === "sentinel-2-l2a" && variant === "clearest" ? setPrimaryArtifacts : undefined
+                    }
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {showWayback && wayback && effectiveBbox && waybackPicked ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div className="text-sm font-medium text-zinc-100">Wayback (Esri World Imagery)</div>
+                  <div className="text-xs text-zinc-400">Options for this location: {wayback.options.length}</div>
+                </div>
+                <div className="mt-1 text-xs text-zinc-500">
+                  Preselected versions are derived from available Wayback releases and probed at the bbox center tile.
+                </div>
+
+                <div className="mt-3 grid gap-3 text-xs text-zinc-200 md:grid-cols-2">
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                    <div className="mb-1 font-medium text-zinc-100">Before</div>
+                    <div className="font-mono text-zinc-200">{waybackPicked.before.date}</div>
+                    <div className="mt-1 font-mono text-zinc-500">v{waybackPicked.before.id}</div>
+                  </div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                    <div className="mb-1 font-medium text-zinc-100">After</div>
+                    <div className="font-mono text-zinc-200">{waybackPicked.after.date}</div>
+                    <div className="mt-1 font-mono text-zinc-500">v{waybackPicked.after.id}</div>
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                  <div className="mb-2 text-xs font-medium text-zinc-300">Wayback diff</div>
+                  <DiffViewer
+                    beforeUrl={null}
+                    afterUrl={null}
+                    selectionBbox={effectiveBbox}
+                    beforeTileUrlTemplate={waybackPicked.before.tileUrlTemplate}
+                    afterTileUrlTemplate={waybackPicked.after.tileUrlTemplate}
+                    tileZoom={tileZoom}
+                    threshold={threshold}
+                    ignoreClouds={ignoreClouds}
+                    ignoreDark={ignoreDark}
+                    onComputed={primarySource === "wayback" ? setDiffStats : undefined}
+                    onArtifacts={primarySource === "wayback" ? setPrimaryArtifacts : undefined}
                   />
                 </div>
               </div>
@@ -877,7 +1302,12 @@ export function GeoProofApp() {
                       afterTileUrlTemplate={stacLandsat.after.tileUrlTemplate ?? null}
                       tileZoom={tileZoom}
                       threshold={threshold}
+                      ignoreClouds={ignoreClouds}
+                      ignoreDark={ignoreDark}
                       onComputed={primarySource === "landsat-c2-l2" && variant === "closest" ? setDiffStats : undefined}
+                      onArtifacts={
+                        primarySource === "landsat-c2-l2" && variant === "closest" ? setPrimaryArtifacts : undefined
+                      }
                     />
                   </div>
 
@@ -893,7 +1323,12 @@ export function GeoProofApp() {
                       afterTileUrlTemplate={(stacLandsat.afterClear ?? stacLandsat.after).tileUrlTemplate ?? null}
                       tileZoom={tileZoom}
                       threshold={threshold}
+                      ignoreClouds={ignoreClouds}
+                      ignoreDark={ignoreDark}
                       onComputed={primarySource === "landsat-c2-l2" && variant === "clearest" ? setDiffStats : undefined}
+                      onArtifacts={
+                        primarySource === "landsat-c2-l2" && variant === "clearest" ? setPrimaryArtifacts : undefined
+                      }
                     />
                   </div>
                 </div>

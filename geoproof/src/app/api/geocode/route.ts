@@ -14,6 +14,8 @@ export async function GET(req: Request) {
     return NextResponse.json({ results: [] });
   }
 
+  const nominatimContact = (process.env.NOMINATIM_CONTACT ?? "YOUR_EMAIL_HERE").trim();
+
   // OpenStreetMap Nominatim (for hackathon/demo).
   // Note: for production, consider hosting your own geocoder or using a paid provider.
   const endpoint = new URL("https://nominatim.openstreetmap.org/search");
@@ -27,7 +29,8 @@ export async function GET(req: Request) {
     const res = await fetch(endpoint.toString(), {
       headers: {
         // Nominatim requires a valid User-Agent.
-        "User-Agent": "GeoProof hackathon app",
+        // Per the usage policy, include a way to contact you if needed.
+        "User-Agent": `GeoProof hackathon app (contact: ${nominatimContact})`,
         Accept: "application/json",
       },
       cache: "no-store",

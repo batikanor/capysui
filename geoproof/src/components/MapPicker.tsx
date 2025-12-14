@@ -349,16 +349,16 @@ export function MapPicker({
   }, [bbox, autoFitToBbox]);
 
   return (
-    <div className="relative h-[520px] w-full overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50">
+    <div className="relative h-[520px] w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950">
       <div ref={containerRef} className="h-full w-full" />
 
-      <div className="absolute left-3 top-3 rounded-lg border border-zinc-200 bg-white/90 p-1 text-xs text-zinc-700 shadow">
+      <div className="absolute left-3 top-3 rounded-lg border border-zinc-800 bg-zinc-950/90 p-1 text-xs text-zinc-200 shadow">
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() => onBaseLayerChange("streets")}
             className={`rounded-md px-2 py-1 ${
-              baseLayer === "streets" ? "bg-zinc-900 text-white" : "text-zinc-700 hover:bg-zinc-100"
+              baseLayer === "streets" ? "bg-zinc-100 text-zinc-950" : "text-zinc-200 hover:bg-zinc-900"
             }`}
           >
             Streets
@@ -367,7 +367,7 @@ export function MapPicker({
             type="button"
             onClick={() => onBaseLayerChange("satellite")}
             className={`rounded-md px-2 py-1 ${
-              baseLayer === "satellite" ? "bg-zinc-900 text-white" : "text-zinc-700 hover:bg-zinc-100"
+              baseLayer === "satellite" ? "bg-zinc-100 text-zinc-950" : "text-zinc-200 hover:bg-zinc-900"
             }`}
           >
             Satellite
