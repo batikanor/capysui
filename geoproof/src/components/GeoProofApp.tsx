@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DiffViewer, type DiffStats } from "./DiffViewer";
 import { MapPicker, type BBox, type BaseLayer, type PointMarker } from "./MapPicker";
 import { PlaceSearch, type PlaceResult } from "./PlaceSearch";
@@ -235,6 +235,15 @@ export function GeoProofApp() {
   const [selectedReportBlob, setSelectedReportBlob] = useState<unknown | null>(null);
   const [selectedReportBlobError, setSelectedReportBlobError] = useState<string | null>(null);
 
+  const watchRegionRef = useRef<boolean>(watchRegion);
+  const lastSeenReportIdRef = useRef<string | null>(lastSeenReportId);
+  useEffect(() => {
+    watchRegionRef.current = watchRegion;
+  }, [watchRegion]);
+  useEffect(() => {
+    lastSeenReportIdRef.current = lastSeenReportId;
+  }, [lastSeenReportId]);
+
   const effectiveBboxKey = useMemo(() => {
     const bb = (() => {
       if (mode === "bbox") return bbox;
@@ -275,13 +284,14 @@ export function GeoProofApp() {
         setRegionReports(items);
 
         // Watch mode: count new reports since last seen.
-        if (watchRegion) {
+        if (watchRegionRef.current) {
           const newest = items[0]?.objectId ?? null;
-          if (!lastSeenReportId) {
+          const lastSeen = lastSeenReportIdRef.current;
+          if (!lastSeen) {
             setLastSeenReportId(newest);
             setNewReportsCount(0);
-          } else if (newest && newest !== lastSeenReportId) {
-            const idx = items.findIndex((it) => it.objectId === lastSeenReportId);
+          } else if (newest && newest !== lastSeen) {
+            const idx = items.findIndex((it) => it.objectId === lastSeen);
             const count = idx >= 0 ? idx : items.length;
             setNewReportsCount(count);
           }
@@ -294,7 +304,7 @@ export function GeoProofApp() {
         setReportsError(msg);
       }
     },
-    [effectiveBboxKey, watchRegion, lastSeenReportId],
+    [effectiveBboxKey],
   );
 
   const fetchAllReports = useCallback(async () => {
@@ -325,13 +335,13 @@ export function GeoProofApp() {
 
   useEffect(() => {
     // Load region feed when bbox changes (debounced elsewhere already via map interactions).
-    fetchRegionReports(false);
+    void fetchRegionReports(false);
     setSelectedReport(null);
     setSelectedReportBlob(null);
     setSelectedReportBlobError(null);
     setNewReportsCount(0);
     setLastSeenReportId(null);
-  }, [fetchRegionReports]);
+  }, [effectiveBboxKey, fetchRegionReports]);
 
   useEffect(() => {
     if (!watchRegion) return;
