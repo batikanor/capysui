@@ -1707,7 +1707,7 @@ export function GeoProofApp() {
 
               <div className="mt-3 grid gap-3">
                 <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-                  <div className="text-xs font-medium text-zinc-200">Experimental: “count objects” (SAM3-style)</div>
+                  <div className="text-xs font-medium text-zinc-200">Experimental: “count objects” (open-vocabulary)</div>
                   <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-400">
                     <li>
                       Use cases: forestry monitoring (tree loss/gain), post-fire assessment, construction / urban growth,
@@ -1718,7 +1718,8 @@ export function GeoProofApp() {
                       <span className="font-mono text-zinc-200"> geoproof/.env.local</span>.
                     </li>
                     <li>
-                      Under the hood we call Hugging Face Inference API for zero-shot object detection.
+                      Under the hood we call Hugging Face Inference API with an open-vocabulary detector (default:
+                      <span className="font-mono text-zinc-200">google/owlvit-base-patch32</span>).
                       <span className="ml-2">
                         <a
                           className="underline"
@@ -1727,6 +1728,15 @@ export function GeoProofApp() {
                           rel="noreferrer"
                         >
                           docs
+                        </a>
+                      </span>
+                    </li>
+                    <li>
+                      Note: <span className="font-mono text-zinc-200">facebook/sam3</span> is not currently deployed on HF serverless inference.
+                      If you want true SAM3 instance masks, we’ll need a dedicated endpoint.
+                      <span className="ml-2">
+                        <a className="underline" href="https://huggingface.co/facebook/sam3" target="_blank" rel="noreferrer">
+                          model
                         </a>
                       </span>
                     </li>

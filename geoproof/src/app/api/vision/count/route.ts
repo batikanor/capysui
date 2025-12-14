@@ -83,11 +83,23 @@ export async function POST(req: Request) {
   }
 
   const model = (body.model ?? process.env.HF_COUNT_MODEL ?? "google/owlvit-base-patch32").trim();
+  if (model === "facebook/sam3" || model.includes("/sam3")) {
+    return NextResponse.json(
+      {
+        error:
+          "facebook/sam3 is not currently deployed on Hugging Face serverless Inference API, so this endpoint cannot call it directly.",
+        hint: "To use SAM3, run a dedicated Hugging Face Inference Endpoint (or self-host) and then wire GeoProof to that endpoint.",
+        source: "https://huggingface.co/facebook/sam3",
+      },
+      { status: 501 },
+    );
+  }
   const threshold = clamp01(typeof body.threshold === "number" ? body.threshold : 0.2);
   const b64 = dataUrlToBase64(body.imageDataUrl);
   if (!b64) return NextResponse.json({ error: "Could not parse image data URL" }, { status: 400 });
 
-  // HF Inference API: zero-shot object detection expects base64 image + candidate_labels.
+  // HF Inference API: OWL-ViT-style open-vocabulary detection uses base64 image + candidate_labels.
+  // (See HF task docs for object detection request shape; some models accept extra parameters like candidate labels.)
   // https://huggingface.co/docs/inference-providers/en/tasks/object-detection
   const res = await fetch(`https://api-inference.huggingface.co/models/${encodeURIComponent(model)}`, {
     method: "POST",
