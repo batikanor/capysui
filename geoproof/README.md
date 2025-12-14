@@ -101,6 +101,13 @@ Walrus writes require WAL tokens (separate from SUI gas). Walrus docs describe g
 walrus get-wal --context testnet
 ```
 
+To exchange more SUI into WAL, pass `--amount` in MIST (1 SUI = 1_000_000_000 MIST):
+
+```bash
+# exchange 2.0 SUI into 2.0 WAL
+walrus get-wal --context testnet --amount 2000000000
+```
+
 Then verify you have both SUI + WAL:
 
 ```bash

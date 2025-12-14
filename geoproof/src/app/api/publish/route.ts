@@ -235,6 +235,8 @@ export async function POST(req: Request) {
   const variant = getString(rd, ["imagery", "variant"]);
 
   const tx = new Transaction();
+  // Explicitly set sender; otherwise signing can fail with "Missing transaction sender".
+  tx.setSender(keypair.getPublicKey().toSuiAddress());
   tx.moveCall({
     target: `${packageId}::geoproof_move::create_report`,
     arguments: [
@@ -248,6 +250,9 @@ export async function POST(req: Request) {
       tx.pure.vector("u8", toBytesUtf8(reportSha256)),
     ],
   });
+
+  // Keep a conservative default gas budget for testnet.
+  tx.setGasBudget(50_000_000);
 
   let digest: string;
   let createdObjectId: string | null = null;
