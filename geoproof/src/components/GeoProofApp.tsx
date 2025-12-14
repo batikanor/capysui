@@ -168,6 +168,16 @@ export function GeoProofApp() {
   const [publishError, setPublishError] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<unknown | null>(null);
   const [publishDiag, setPublishDiag] = useState<{ missingEnv: string[]; error: string | null } | null>(null);
+  const [publishBalance, setPublishBalance] = useState<
+    | {
+        network: string;
+        address: string;
+        balances: { SUI: { total: string }; WAL: { total: string } };
+      }
+    | { error: string }
+    | null
+  >(null);
+  const [includeArtifacts, setIncludeArtifacts] = useState<boolean>(false);
 
   const [waybackComputeNonce, setWaybackComputeNonce] = useState<number>(0);
 
@@ -249,13 +259,20 @@ export function GeoProofApp() {
       const after = wayback.options[safeAfter];
       if (!before || !after) return;
 
+      // IMPORTANT: Don't update Wayback state if ids didn't actually change.
+      // Otherwise we create a new `wayback` object every 250ms -> repeated resets -> Publish button flickers.
+      if (before.id === wayback.beforeId && after.id === wayback.afterId) return;
+
       setWayback((prev) => (prev ? { ...prev, beforeId: before.id, afterId: after.id } : prev));
       setStartDate(before.date);
       setEndDate(after.date);
-      resetComputed();
+
+      // Clear only Wayback computed state; DiffViewer will recompute immediately with new templates.
+      setWaybackStats(null);
+      setWaybackArtifacts(null);
     }, 250);
     return () => clearTimeout(t);
-  }, [wayback, wbDraftBeforeIdx, wbDraftAfterIdx, resetComputed]);
+  }, [wayback, wbDraftBeforeIdx, wbDraftAfterIdx]);
 
   const primary = useMemo(() => {
     if (primarySource === "wayback") return null;
@@ -648,6 +665,7 @@ export function GeoProofApp() {
         body: JSON.stringify({
           reportDraft,
           artifacts: activeComputed.artifacts ?? undefined,
+          includeArtifacts,
         }),
       });
 
@@ -668,7 +686,7 @@ export function GeoProofApp() {
     } finally {
       setPublishLoading(false);
     }
-  }, [activeComputed.artifacts, reportDraft]);
+  }, [activeComputed.artifacts, reportDraft, includeArtifacts]);
 
   const diffStats = activeComputed.stats;
 
@@ -696,6 +714,31 @@ export function GeoProofApp() {
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         if (!cancelled) setPublishDiag({ missingEnv: [], error: msg });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/publish/balance", { method: "GET" });
+        const raw = (await res.json()) as unknown;
+        if (!res.ok) {
+          const msg =
+            typeof raw === "object" && raw !== null && "error" in raw && typeof (raw as { error?: unknown }).error === "string"
+              ? (raw as { error: string }).error
+              : `HTTP ${res.status}`;
+          if (!cancelled) setPublishBalance({ error: msg });
+          return;
+        }
+        if (!cancelled) setPublishBalance(raw as { network: string; address: string; balances: { SUI: { total: string }; WAL: { total: string } } });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!cancelled) setPublishBalance({ error: msg });
       }
     })();
     return () => {
@@ -1284,6 +1327,31 @@ export function GeoProofApp() {
               <div className="text-xs text-zinc-300">
                 Store an evidence bundle on Walrus and anchor a `ChangeReport` object on Sui testnet.
               </div>
+
+              <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-200">
+                <div className="font-medium text-zinc-300">Wallet (server)</div>
+                {publishBalance == null ? (
+                  <div className="mt-1 text-zinc-500">Loading…</div>
+                ) : "error" in publishBalance ? (
+                  <div className="mt-1 text-red-200">{publishBalance.error}</div>
+                ) : (
+                  <div className="mt-1 space-y-1 text-zinc-400">
+                    <div>
+                      Address: <span className="font-mono text-zinc-200">{publishBalance.address}</span>
+                    </div>
+                    <div>
+                      Balances:{" "}
+                      <span className="font-mono text-zinc-200">{(Number(publishBalance.balances.SUI.total) / 1e9).toFixed(3)}</span> SUI,
+                      <span className="ml-1 font-mono text-zinc-200">{(Number(publishBalance.balances.WAL.total) / 1e9).toFixed(3)}</span> WAL
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <label className="mt-3 flex items-center gap-2 text-xs text-zinc-200">
+                <input type="checkbox" checked={includeArtifacts} onChange={(e) => setIncludeArtifacts(e.target.checked)} />
+                Include images in Walrus bundle (costs WAL)
+              </label>
               <button
                 disabled={!reportDraft || publishLoading}
                 onClick={doPublish}

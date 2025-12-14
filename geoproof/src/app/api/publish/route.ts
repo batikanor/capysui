@@ -21,6 +21,7 @@ type PublishBody = {
     afterDataUrl?: string | null;
     diffDataUrl?: string | null;
   };
+  includeArtifacts?: boolean;
 };
 
 type SuiExecuteResult = {
@@ -129,11 +130,18 @@ export async function POST(req: Request) {
     createdAt: new Date().toISOString(),
     reportSha256,
     reportDraft: body.reportDraft,
-    artifacts: {
-      beforeDataUrl: body.artifacts?.beforeDataUrl ?? null,
-      afterDataUrl: body.artifacts?.afterDataUrl ?? null,
-      diffDataUrl: body.artifacts?.diffDataUrl ?? null,
-    },
+    artifacts:
+      body.includeArtifacts === true
+        ? {
+            beforeDataUrl: body.artifacts?.beforeDataUrl ?? null,
+            afterDataUrl: body.artifacts?.afterDataUrl ?? null,
+            diffDataUrl: body.artifacts?.diffDataUrl ?? null,
+          }
+        : {
+            beforeDataUrl: null,
+            afterDataUrl: null,
+            diffDataUrl: null,
+          },
   };
 
   const evidenceBytes = new TextEncoder().encode(JSON.stringify(evidenceBundle));
