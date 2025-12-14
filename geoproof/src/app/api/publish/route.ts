@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
+import { getFullnodeUrl } from "@mysten/sui/client";
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Secp256k1Keypair } from "@mysten/sui/keypairs/secp256k1";
 import { Secp256r1Keypair } from "@mysten/sui/keypairs/secp256r1";
+import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 import { walrus } from "@mysten/walrus";
 import crypto from "node:crypto";
@@ -14,10 +15,10 @@ import { stableStringify } from "@/lib/stableJson";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// Default Walrus testnet ids from Mysten docs (used when Walrus contracts roll):
-// https://sdk.mystenlabs.com/walrus
-const DEFAULT_WALRUS_SYSTEM_OBJECT_ID = "0x98ebc47370603fe81d9e15491b2f1443d619d1dab720d586e429ed233e1255c1";
-const DEFAULT_WALRUS_STAKING_POOL_ID = "0x20266a17b4f1a216727f3eef5772f8d486a9e3b5e319af80a5b75809c035561d";
+// Default Walrus testnet ids from Walrus docs:
+// https://docs.wal.app/docs/usage/networks#testnet-parameters
+const DEFAULT_WALRUS_SYSTEM_OBJECT_ID = "0x6c2547cbbc38025cf3adac45f63cb0a8d12ecf777cdc75a4971612bf97fdf6af";
+const DEFAULT_WALRUS_STAKING_POOL_ID = "0xbe46180321c30aab2f8b3501e24048377287fa708018a5b7c2792b35fe339ee3";
 
 type PublishBody = {
   reportDraft: unknown;
@@ -118,7 +119,9 @@ export async function POST(req: Request) {
     );
   }
 
-  const client = new SuiClient({ url, network }).$extend(
+  // Mysten docs recommend using SuiJsonRpcClient (and setting network) for Walrus.
+  // https://sdk.mystenlabs.com/walrus
+  const client = new SuiJsonRpcClient({ url, network }).$extend(
     walrus({
       packageConfig: {
         systemObjectId: walrusSystemObjectId,
