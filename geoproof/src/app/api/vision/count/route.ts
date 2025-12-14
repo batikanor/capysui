@@ -121,6 +121,22 @@ export async function POST(req: Request) {
       typeof raw === "object" && raw !== null && typeof (raw as { error?: unknown }).error === "string"
         ? (raw as { error: string }).error
         : `HF error: ${res.status} ${res.statusText}`;
+
+    if (res.status === 404) {
+      return NextResponse.json(
+        {
+          error: `HF error: 404 Not Found (model not available on this serverless provider): ${model}`,
+          hint:
+            "Pick a model that is actually supported by HF Inference, or deploy a dedicated Inference Endpoint. For SAM3 specifically, you must use a dedicated endpoint (the model page indicates it isn't deployed on serverless providers).",
+          links: {
+            hfInferenceProvider: "https://huggingface.co/docs/inference-providers/en/providers/hf-inference",
+            model: `https://huggingface.co/${model}`,
+            sam3: "https://huggingface.co/facebook/sam3",
+          },
+        },
+        { status: 404 },
+      );
+    }
     return NextResponse.json(
       {
         error: msg,
