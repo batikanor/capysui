@@ -14,6 +14,11 @@ import { stableStringify } from "@/lib/stableJson";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+// Default Walrus testnet ids from Mysten docs (used when Walrus contracts roll):
+// https://sdk.mystenlabs.com/walrus
+const DEFAULT_WALRUS_SYSTEM_OBJECT_ID = "0x98ebc47370603fe81d9e15491b2f1443d619d1dab720d586e429ed233e1255c1";
+const DEFAULT_WALRUS_STAKING_POOL_ID = "0x20266a17b4f1a216727f3eef5772f8d486a9e3b5e319af80a5b75809c035561d";
+
 type PublishBody = {
   reportDraft: unknown;
   artifacts?: {
@@ -94,6 +99,8 @@ export async function POST(req: Request) {
     return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 100) : 3;
   })();
   const uploadRelayHost = process.env.WALRUS_UPLOAD_RELAY_HOST ?? "https://upload-relay.testnet.walrus.space";
+  const walrusSystemObjectId = process.env.WALRUS_SYSTEM_OBJECT_ID ?? DEFAULT_WALRUS_SYSTEM_OBJECT_ID;
+  const walrusStakingPoolId = process.env.WALRUS_STAKING_POOL_ID ?? DEFAULT_WALRUS_STAKING_POOL_ID;
 
   let keypair;
   try {
@@ -113,6 +120,10 @@ export async function POST(req: Request) {
 
   const client = new SuiClient({ url, network }).$extend(
     walrus({
+      packageConfig: {
+        systemObjectId: walrusSystemObjectId,
+        stakingPoolId: walrusStakingPoolId,
+      },
       uploadRelay: {
         host: uploadRelayHost,
         sendTip: { max: 1_000 },

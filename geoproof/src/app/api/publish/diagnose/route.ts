@@ -3,7 +3,14 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 const REQUIRED = ["SUI_PRIVATE_KEY", "GEOPROOF_PACKAGE_ID"] as const;
-const RECOMMENDED = ["SUI_NETWORK", "SUI_RPC_URL", "WALRUS_UPLOAD_RELAY_HOST", "WALRUS_EPOCHS"] as const;
+const RECOMMENDED = [
+  "SUI_NETWORK",
+  "SUI_RPC_URL",
+  "WALRUS_UPLOAD_RELAY_HOST",
+  "WALRUS_EPOCHS",
+  "WALRUS_SYSTEM_OBJECT_ID",
+  "WALRUS_STAKING_POOL_ID",
+] as const;
 
 export async function GET() {
   const missing = REQUIRED.filter((k) => !process.env[k] || !String(process.env[k]).trim());
