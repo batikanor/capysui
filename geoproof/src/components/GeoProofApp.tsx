@@ -1420,47 +1420,46 @@ export function GeoProofApp() {
                 ) : "error" in publishBalance ? (
                   <div className="mt-1 text-red-200">{publishBalance.error}</div>
                 ) : (
-                  <div className="mt-1 space-y-1 text-zinc-400">
-                    <div>
-                      Address: <span className="font-mono text-zinc-200">{publishBalance.address}</span>
-                    </div>
-                    <div>
-                      Balances:{" "}
-                      <span className="font-mono text-zinc-200">{(Number(publishBalance.balances.SUI.total) / 1e9).toFixed(3)}</span> SUI,
-                      <span className="ml-1 font-mono text-zinc-200">{(Number(publishBalance.balances.WAL.total) / 1e9).toFixed(3)}</span> WAL
-                    </div>
-                    {publishBalance.balances.WAL.coinType ? (
-                      <div>
-                        WAL type: <span className="font-mono text-zinc-200">{publishBalance.balances.WAL.coinType}</span>
+                  <div className="mt-1 space-y-2 text-zinc-400">
+                    <div className="grid gap-1">
+                      <div className="text-[11px] uppercase tracking-wide text-zinc-500">Address</div>
+                      <div className="rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 font-mono text-[11px] leading-4 text-zinc-200 break-all">
+                        {publishBalance.address}
                       </div>
-                    ) : null}
-                    {publishBalance.balances.WAL.byType && Object.keys(publishBalance.balances.WAL.byType).length > 1 ? (
-                      <div className="text-[11px] leading-4 text-zinc-500">
-                        WAL by type:
-                        <ul className="mt-1 list-disc space-y-0.5 pl-5">
-                          {Object.entries(publishBalance.balances.WAL.byType)
-                            .sort(([a], [b]) => a.localeCompare(b))
-                            .map(([t, v]) => (
-                              <li key={t}>
-                                <span className="font-mono text-zinc-300">{(Number(v) / 1e9).toFixed(3)}</span> of{" "}
-                                <span className="font-mono text-zinc-400">{t}</span>
-                              </li>
-                            ))}
-                        </ul>
+                    </div>
+
+                    <div className="grid gap-1">
+                      <div className="text-[11px] uppercase tracking-wide text-zinc-500">Balances</div>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-zinc-200">
+                        <span>{(Number(publishBalance.balances.SUI.total) / 1e9).toFixed(3)} SUI</span>
+                        <span>{(Number(publishBalance.balances.WAL.total) / 1e9).toFixed(3)} WAL</span>
+                      </div>
+                    </div>
+
+                    {publishBalance.balances.WAL.coinType ? (
+                      <div className="grid gap-1">
+                        <div className="text-[11px] uppercase tracking-wide text-zinc-500">WAL type (have)</div>
+                        <div className="rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 font-mono text-[11px] leading-4 text-zinc-200 break-all">
+                          {publishBalance.balances.WAL.coinType}
+                        </div>
                       </div>
                     ) : null}
 
-                    {publishBalance.balances.WAL.byType && Object.keys(publishBalance.balances.WAL.byType).length === 1 ? (
-                      <div className="text-[11px] leading-4 text-zinc-500">
-                        WAL by type:
-                        <ul className="mt-1 list-disc space-y-0.5 pl-5">
-                          {Object.entries(publishBalance.balances.WAL.byType).map(([t, v]) => (
-                            <li key={t}>
-                              <span className="font-mono text-zinc-300">{(Number(v) / 1e9).toFixed(3)}</span> of{" "}
-                              <span className="font-mono text-zinc-400">{t}</span>
-                            </li>
-                          ))}
-                        </ul>
+                    {publishBalance.balances.WAL.byType ? (
+                      <div className="grid gap-1">
+                        <div className="text-[11px] uppercase tracking-wide text-zinc-500">WAL by type</div>
+                        <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2">
+                          <ul className="space-y-1">
+                            {Object.entries(publishBalance.balances.WAL.byType)
+                              .sort(([a], [b]) => a.localeCompare(b))
+                              .map(([t, v]) => (
+                                <li key={t} className="grid grid-cols-[72px_1fr] gap-2">
+                                  <span className="font-mono text-[11px] text-zinc-200">{(Number(v) / 1e9).toFixed(3)}</span>
+                                  <span className="font-mono text-[11px] leading-4 text-zinc-400 break-all">{t}</span>
+                                </li>
+                              ))}
+                          </ul>
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -1469,30 +1468,36 @@ export function GeoProofApp() {
 
               <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-200">
                 <div className="font-medium text-zinc-300">Faucets / getting more tokens</div>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-zinc-400">
-                  <li>
-                    Testnet WAL (via Walrus CLI):{" "}
-                    <a
-                      className="text-zinc-200 underline"
-                      href="https://docs.wal.app/docs/usage/networks#testnet-wal-faucet"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      walrus get-wal
-                    </a>
-                  </li>
-                  <li>
-                    Testnet SUI faucet:{" "}
-                    <a
-                      className="text-zinc-200 underline"
-                      href="https://docs.sui.io/guides/developer/getting-started/get-coins"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      docs
-                    </a>
-                  </li>
-                </ul>
+
+                <div className="mt-2 grid gap-2">
+                  <a
+                    className="inline-flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-200"
+                    href="https://docs.wal.app/docs/usage/networks#testnet-wal-faucet"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <span>
+                      <span className="font-medium">Testnet WAL</span>
+                      <span className="text-zinc-500"> · </span>
+                      <span className="font-mono text-zinc-300">walrus get-wal</span>
+                    </span>
+                    <span className="text-zinc-500">docs</span>
+                  </a>
+                  <a
+                    className="inline-flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-200"
+                    href="https://faucet.sui.io/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <span>
+                      <span className="font-medium">Testnet SUI</span>
+                      <span className="text-zinc-500"> · </span>
+                      <span className="text-zinc-400">faucet.sui.io</span>
+                    </span>
+                    <span className="text-zinc-500">open</span>
+                  </a>
+                </div>
+
                 <div className="mt-2 text-[11px] leading-4 text-zinc-500">
                   Note: WAL coin types can change when Walrus Testnet redeploys. After getting WAL, refresh to confirm it
                   matches the “Expected WAL type”.
