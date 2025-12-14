@@ -172,7 +172,10 @@ export function GeoProofApp() {
     | {
         network: string;
         address: string;
-        balances: { SUI: { total: string; coinType?: string }; WAL: { total: string; coinType?: string } };
+        balances: {
+          SUI: { total: string; coinType?: string };
+          WAL: { total: string; coinType?: string | null; byType?: Record<string, string> };
+        };
       }
     | { error: string }
     | null
@@ -749,7 +752,10 @@ export function GeoProofApp() {
             raw as {
               network: string;
               address: string;
-              balances: { SUI: { total: string; coinType?: string }; WAL: { total: string; coinType?: string } };
+              balances: {
+                SUI: { total: string; coinType?: string };
+                WAL: { total: string; coinType?: string | null; byType?: Record<string, string> };
+              };
             },
           );
       } catch (e: unknown) {
@@ -844,7 +850,7 @@ export function GeoProofApp() {
           try {
             if (BigInt(have) < BigInt(totalCost)) {
               reasons.push(
-                `Insufficient WAL for current Walrus deployment (needs WAL of type ${derivedWalType.slice(0, 10)}...).`,
+                `Insufficient WAL for current Walrus deployment (need ${(Number(totalCost) / 1e9).toFixed(6)} of ${derivedWalType.slice(0, 10)}..., have ${(Number(have) / 1e9).toFixed(6)}).`,
               );
             }
           } catch {
@@ -1428,6 +1434,21 @@ export function GeoProofApp() {
                         WAL type: <span className="font-mono text-zinc-200">{publishBalance.balances.WAL.coinType}</span>
                       </div>
                     ) : null}
+                    {publishBalance.balances.WAL.byType && Object.keys(publishBalance.balances.WAL.byType).length > 1 ? (
+                      <div className="text-[11px] leading-4 text-zinc-500">
+                        WAL by type:
+                        <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                          {Object.entries(publishBalance.balances.WAL.byType)
+                            .sort(([a], [b]) => a.localeCompare(b))
+                            .map(([t, v]) => (
+                              <li key={t}>
+                                <span className="font-mono text-zinc-300">{(Number(v) / 1e9).toFixed(3)}</span> of{" "}
+                                <span className="font-mono text-zinc-400">{t}</span>
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -1461,11 +1482,19 @@ export function GeoProofApp() {
                       <div>
                         Expected WAL type: <span className="font-mono text-zinc-200">{publishEstimate.walrus.resolved.derivedWalType ?? "(unknown)"}</span>
                       </div>
+                      {publishEstimate.walrus.resolved.derivedWalType ? (
+                        <div>
+                          Have (that type):{" "}
+                          <span className="font-mono text-zinc-200">
+                            {(Number(publishEstimate.wallet.walBalances[publishEstimate.walrus.resolved.derivedWalType] ?? "0") / 1e9).toFixed(3)}
+                          </span>
+                        </div>
+                      ) : null}
                       <div>
                         Est. WAL cost (epochs):{" "}
                         <span className="font-mono text-zinc-200">
                           {publishEstimate.walrus.cost?.totalCost
-                            ? (Number(publishEstimate.walrus.cost.totalCost) / 1e9).toFixed(3)
+                            ? (Number(publishEstimate.walrus.cost.totalCost) / 1e9).toFixed(6)
                             : "(unavailable)"}
                         </span>
                       </div>
