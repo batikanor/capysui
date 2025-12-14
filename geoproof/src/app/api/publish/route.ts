@@ -7,6 +7,7 @@ import { Secp256k1Keypair } from "@mysten/sui/keypairs/secp256k1";
 import { Secp256r1Keypair } from "@mysten/sui/keypairs/secp256r1";
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
+import { normalizeStructTag, parseStructTag } from "@mysten/sui/utils";
 import { walrus } from "@mysten/walrus";
 import crypto from "node:crypto";
 
@@ -171,10 +172,36 @@ export async function POST(req: Request) {
     walrusBlobId = res.blobId;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
+
+    // Best-effort diagnostics: report which WAL coin type the Walrus config is expecting.
+    let walType: string | null = null;
+    try {
+      const systemObj = await client.getObject({ id: walrusSystemObjectId, options: { showType: true } });
+      const systemType =
+        typeof systemObj.data?.type === "string" && systemObj.data.type.includes("::") ? systemObj.data.type : null;
+      const pkg = systemType ? parseStructTag(systemType).address : null;
+      if (pkg) {
+        const mf = await client.core.getMoveFunction({ packageId: pkg, moduleName: "staking", name: "stake_with_pool" });
+        const toStake = mf.function.parameters?.[1];
+        const body = toStake?.body;
+        const coinTypeParam =
+          body?.$kind === "datatype" && body.datatype.typeParameters?.[0]?.$kind === "datatype"
+            ? body.datatype.typeParameters[0]
+            : null;
+        if (coinTypeParam?.$kind === "datatype") walType = normalizeStructTag(coinTypeParam.datatype.typeName);
+      }
+    } catch {
+      // ignore
+    }
+
     return NextResponse.json(
       {
         error: `Walrus upload failed: ${msg}`,
         hint: "Make sure the Sui address has Testnet SUI + WAL (Walrus) tokens.",
+        walrus: {
+          config: { walrusSystemObjectId, walrusStakingPoolId, uploadRelayHost, epochs },
+          derivedWalType: walType,
+        },
       },
       { status: 502 },
     );
