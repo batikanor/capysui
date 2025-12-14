@@ -1,36 +1,116 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GeoProof (Sui Hackathon Submission)
 
-## Getting Started
+GeoProof generates a verifiable satellite change report:
+- pick an AOI (bbox / radius / from→to)
+- pick a *Wayback timeline* (unique snapshots per location)
+- render before/after crops + change mask
+- publish an evidence bundle to **Walrus** and anchor a `ChangeReport` object on **Sui**
 
-First, run the development server:
+## Prerequisites
+
+- Node.js + npm
+- Sui CLI installed (`sui --version`)
+
+Official references:
+- Sui CLI client docs: https://docs.sui.io/references/cli/client
+- Sui keytool docs: https://docs.sui.io/references/cli/keytool
+- Get testnet coins / faucet: https://docs.sui.io/guides/developer/getting-started/get-coins
+
+## 1) Run locally
 
 ```bash
+cd geoproof
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 2) One-time setup: Sui testnet wallet + env vars (required for Publish)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The backend route `POST /api/publish` needs:
+- `SUI_PRIVATE_KEY` (bech32 string starting with `suiprivkey`)
+- `GEOPROOF_PACKAGE_ID` (published Move package id)
 
-## Learn More
+### 2.1 Configure Sui CLI for testnet
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+sui client new-env --alias testnet --rpc https://fullnode.testnet.sui.io:443 || true
+sui client switch --env testnet
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### 2.2 Create a new address (local keystore)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+This generates a new keypair in your local Sui keystore:
 
-## Deploy on Vercel
+```bash
+sui client new-address ed25519
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Get the active address:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+sui client active-address
+```
+
+### 2.3 Fund the address (testnet faucet)
+
+Some Sui CLI versions will instruct you to use the Web UI. Use whichever works for you:
+
+```bash
+sui client faucet
+```
+
+If the CLI tells you to use the web faucet, open the provided link (it includes your address).
+
+Verify balance:
+
+```bash
+sui client balance
+```
+
+### 2.4 Export `SUI_PRIVATE_KEY` in `suiprivkey...` format
+
+GeoProof uses Mysten’s `decodeSuiPrivateKey()` (TypeScript SDK) which expects the bech32 format that starts with `suiprivkey`.
+
+```bash
+sui keytool export --key-identity $(sui client active-address)
+```
+
+Create `geoproof/.env.local`:
+
+```env
+SUI_NETWORK=testnet
+SUI_PRIVATE_KEY=<YOUR_SUI_PRIVATE_KEY_IN_BECH32_FORMAT>
+GEOPROOF_PACKAGE_ID=
+
+WALRUS_UPLOAD_RELAY_HOST=https://upload-relay.testnet.walrus.space
+WALRUS_EPOCHS=3
+
+NOMINATIM_CONTACT=youremail@example.com
+```
+
+Notes:
+- `.env.local` is ignored by git (see `geoproof/.gitignore`).
+- Set a real `NOMINATIM_CONTACT` to comply with Nominatim usage policy.
+
+Additional notes:
+- If `sui client faucet` prints a web URL instead of dispensing coins, use that URL (this is expected behavior on some CLI/network setups and is documented by Sui).
+- You must have enough Testnet SUI for both Move publish and later “Publish to Walrus + Sui” from the app.
+
+## 3) Publish the Move package (to get `GEOPROOF_PACKAGE_ID`)
+
+```bash
+cd geoproof/move/geoproof_move
+sui move build
+sui client publish --gas-budget 200000000
+```
+
+Copy the published `packageId` from the output into `GEOPROOF_PACKAGE_ID` in `geoproof/.env.local`.
+
+## 4) Use Publish in the UI
+
+1. Generate a Wayback diff (recommended)
+2. Click **Publish to Walrus + Sui**
+
+If publish fails, the response includes a hint (most commonly: faucet funds missing).

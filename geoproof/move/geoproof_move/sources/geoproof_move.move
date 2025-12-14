@@ -1,7 +1,10 @@
+#[allow(duplicate_alias)]
 module geoproof_move::geoproof_move {
-  use sui::object::{Self, UID};
+  use sui::object;
+  use sui::object::UID;
   use sui::transfer;
-  use sui::tx_context::{Self, TxContext};
+  use sui::tx_context;
+  use sui::tx_context::TxContext;
 
   /// Off-chain, the Walrus blob contains a JSON bundle (report draft + rendered artifacts).
   /// On-chain we only anchor a compact pointer + digest.

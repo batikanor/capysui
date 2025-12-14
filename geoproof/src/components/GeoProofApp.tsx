@@ -135,6 +135,7 @@ export function GeoProofApp() {
   const [stacS2, setStacS2] = useState<StacResponse | null>(null);
   const [stacLandsat, setStacLandsat] = useState<StacResponse | null>(null);
   const [wayback, setWayback] = useState<WaybackState | null>(null);
+  const [waybackLoading, setWaybackLoading] = useState<boolean>(false);
   const [secondaryWarning, setSecondaryWarning] = useState<string | null>(null);
 
   const [variant, setVariant] = useState<Variant>("clearest");
@@ -147,16 +148,51 @@ export function GeoProofApp() {
   const [ignoreDark, setIgnoreDark] = useState<boolean>(false);
 
   const [threshold, setThreshold] = useState<number>(40);
-  const [diffStats, setDiffStats] = useState<DiffStats | null>(null);
-  const [primaryArtifacts, setPrimaryArtifacts] = useState<
-    { beforeDataUrl: string; afterDataUrl: string; diffDataUrl: string } | null
-  >(null);
+
+  type Artifacts = { beforeDataUrl: string; afterDataUrl: string; diffDataUrl: string };
+
+  // Persist computed diffs per source/variant so the Publish button doesn't depend on which panel
+  // happened to compute last.
+  const [waybackStats, setWaybackStats] = useState<DiffStats | null>(null);
+  const [waybackArtifacts, setWaybackArtifacts] = useState<Artifacts | null>(null);
+  const [s2ClosestStats, setS2ClosestStats] = useState<DiffStats | null>(null);
+  const [s2ClosestArtifacts, setS2ClosestArtifacts] = useState<Artifacts | null>(null);
+  const [s2ClearestStats, setS2ClearestStats] = useState<DiffStats | null>(null);
+  const [s2ClearestArtifacts, setS2ClearestArtifacts] = useState<Artifacts | null>(null);
+  const [lsClosestStats, setLsClosestStats] = useState<DiffStats | null>(null);
+  const [lsClosestArtifacts, setLsClosestArtifacts] = useState<Artifacts | null>(null);
+  const [lsClearestStats, setLsClearestStats] = useState<DiffStats | null>(null);
+  const [lsClearestArtifacts, setLsClearestArtifacts] = useState<Artifacts | null>(null);
 
   const [publishLoading, setPublishLoading] = useState<boolean>(false);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<unknown | null>(null);
 
   const [tileZoom, setTileZoom] = useState<number>(16);
+
+  const resetComputed = useCallback(() => {
+    setWaybackStats(null);
+    setWaybackArtifacts(null);
+    setS2ClosestStats(null);
+    setS2ClosestArtifacts(null);
+    setS2ClearestStats(null);
+    setS2ClearestArtifacts(null);
+    setLsClosestStats(null);
+    setLsClosestArtifacts(null);
+    setLsClearestStats(null);
+    setLsClearestArtifacts(null);
+  }, []);
+
+  const resetStacComputed = useCallback(() => {
+    setS2ClosestStats(null);
+    setS2ClosestArtifacts(null);
+    setS2ClearestStats(null);
+    setS2ClearestArtifacts(null);
+    setLsClosestStats(null);
+    setLsClosestArtifacts(null);
+    setLsClearestStats(null);
+    setLsClearestArtifacts(null);
+  }, []);
 
   // Draft indices for sliders to avoid re-running expensive tile diffs on every drag tick.
   const [wbDraftBeforeIdx, setWbDraftBeforeIdx] = useState<number | null>(null);
@@ -213,10 +249,10 @@ export function GeoProofApp() {
       setWayback((prev) => (prev ? { ...prev, beforeId: before.id, afterId: after.id } : prev));
       setStartDate(before.date);
       setEndDate(after.date);
-      setDiffStats(null);
+      resetComputed();
     }, 250);
     return () => clearTimeout(t);
-  }, [wayback, wbDraftBeforeIdx, wbDraftAfterIdx]);
+  }, [wayback, wbDraftBeforeIdx, wbDraftAfterIdx, resetComputed]);
 
   const primary = useMemo(() => {
     if (primarySource === "wayback") return null;
@@ -232,6 +268,68 @@ export function GeoProofApp() {
     if (mode === "fromTo" && fromCoord && toCoord) return bboxFromTwoPoints(fromCoord, toCoord);
     return null;
   }, [mode, bbox, centerCoord, radiusKm, fromCoord, toCoord]);
+
+  // Auto-load Wayback timeline when the bbox changes (debounced), so the timeline feels like a feature.
+  useEffect(() => {
+    if (!showWayback || !effectiveBbox) {
+      setWayback(null);
+      setWaybackLoading(false);
+      return;
+    }
+
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      setWaybackLoading(true);
+      setWayback(null);
+      resetComputed();
+      setSecondaryWarning(null);
+      setStacS2(null);
+      setStacLandsat(null);
+
+      try {
+        const res = await fetch("/api/wayback/options", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ bbox: effectiveBbox, zoom: tileZoom, limit: 60 }),
+          signal: ctrl.signal,
+        });
+        const raw = (await res.json()) as unknown;
+        if (!res.ok) {
+          const msg =
+            typeof raw === "object" && raw !== null && typeof (raw as { error?: unknown }).error === "string"
+              ? (raw as { error: string }).error
+              : `Wayback request failed: ${res.status}`;
+          setSecondaryWarning(msg);
+          return;
+        }
+
+        const data = raw as WaybackOptionsResponse;
+        const beforeId = data.suggested?.beforeId ?? data.options?.[0]?.id;
+        const afterId = data.suggested?.afterId ?? data.options?.[data.options.length - 1]?.id;
+        if (beforeId == null || afterId == null || !Array.isArray(data.options) || data.options.length < 2) {
+          setSecondaryWarning("Wayback returned too few unique snapshots for this location.");
+          return;
+        }
+
+        const before = data.options.find((o) => o.id === beforeId) ?? data.options[0];
+        const after = data.options.find((o) => o.id === afterId) ?? data.options[data.options.length - 1];
+        setWayback({ query: data.query, options: data.options, beforeId, afterId });
+        setStartDate(before.date);
+        setEndDate(after.date);
+      } catch (e: unknown) {
+        if (e instanceof Error && e.name === "AbortError") return;
+        const msg = e instanceof Error ? e.message : String(e);
+        setSecondaryWarning(`Wayback request error: ${msg}`);
+      } finally {
+        setWaybackLoading(false);
+      }
+    }, 350);
+
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  }, [showWayback, effectiveBbox, tileZoom, resetComputed]);
 
   const circle = useMemo(() => {
     if (mode !== "radius" || !centerCoord) return null;
@@ -258,7 +356,34 @@ export function GeoProofApp() {
     return [fromCoord, toCoord];
   }, [mode, fromCoord, toCoord]);
 
+  const activeComputed = useMemo(() => {
+    if (primarySource === "wayback") return { stats: waybackStats, artifacts: waybackArtifacts };
+    if (primarySource === "sentinel-2-l2a") {
+      return variant === "clearest"
+        ? { stats: s2ClearestStats, artifacts: s2ClearestArtifacts }
+        : { stats: s2ClosestStats, artifacts: s2ClosestArtifacts };
+    }
+    // landsat
+    return variant === "clearest"
+      ? { stats: lsClearestStats, artifacts: lsClearestArtifacts }
+      : { stats: lsClosestStats, artifacts: lsClosestArtifacts };
+  }, [
+    primarySource,
+    variant,
+    waybackStats,
+    waybackArtifacts,
+    s2ClosestStats,
+    s2ClosestArtifacts,
+    s2ClearestStats,
+    s2ClearestArtifacts,
+    lsClosestStats,
+    lsClosestArtifacts,
+    lsClearestStats,
+    lsClearestArtifacts,
+  ]);
+
   const reportDraft = useMemo(() => {
+    const diffStats = activeComputed.stats;
     if (!effectiveBbox || !diffStats) return null;
 
     if (primarySource === "wayback") {
@@ -318,15 +443,26 @@ export function GeoProofApp() {
         sui: "TODO",
       },
     };
-  }, [effectiveBbox, primary, primaryPicked, diffStats, startDate, endDate, threshold, variant, primarySource, wayback, waybackPicked]);
+  }, [
+    activeComputed.stats,
+    effectiveBbox,
+    primary,
+    primaryPicked,
+    startDate,
+    endDate,
+    threshold,
+    variant,
+    primarySource,
+    wayback,
+    waybackPicked,
+  ]);
 
   const runSearch = useCallback(async () => {
     setError(null);
     setStacS2(null);
     setStacLandsat(null);
-    setWayback(null);
-    setDiffStats(null);
-    setPrimaryArtifacts(null);
+    // Don't wipe Wayback computed diffs; searching STAC shouldn't disable publishing a completed Wayback diff.
+    resetStacComputed();
     setPublishError(null);
     setPublishResult(null);
     setSecondaryWarning(null);
@@ -347,45 +483,13 @@ export function GeoProofApp() {
       let windowStart = startDate;
       let windowEnd = endDate;
 
-      // 1) Resolve Wayback availability first so we can use its timeline as the canonical time range.
-      if (showWayback) {
-        try {
-          const resWb = await fetch("/api/wayback/options", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ bbox: effectiveBbox, zoom: tileZoom, limit: 60 }),
-          });
-          const rawWb = (await resWb.json()) as unknown;
-          if (resWb.ok) {
-            const data = rawWb as WaybackOptionsResponse;
-            const beforeId = data.suggested?.beforeId ?? data.options?.[0]?.id;
-            const afterId = data.suggested?.afterId ?? data.options?.[data.options.length - 1]?.id;
-            if (beforeId == null || afterId == null || !Array.isArray(data.options) || data.options.length === 0) {
-              setSecondaryWarning((prev) =>
-                prev ? `${prev}\nWayback response missing options.` : "Wayback response missing options.",
-              );
-            } else {
-              const wbState: WaybackState = { query: data.query, options: data.options, beforeId, afterId };
-              setWayback(wbState);
-
-              const before = data.options.find((o) => o.id === beforeId) ?? data.options[0];
-              const after =
-                data.options.find((o) => o.id === afterId) ?? data.options[data.options.length - 1];
-              if (before?.date && after?.date) {
-                windowStart = before.date;
-                windowEnd = after.date;
-              }
-            }
-          } else {
-            const msg =
-              typeof rawWb === "object" && rawWb !== null && typeof (rawWb as { error?: unknown }).error === "string"
-                ? (rawWb as { error: string }).error
-                : `Wayback request failed: ${resWb.status}`;
-            setSecondaryWarning((prev) => (prev ? `${prev}\n${msg}` : msg));
-          }
-        } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message : String(e);
-          setSecondaryWarning((prev) => (prev ? `${prev}\nWayback request error: ${msg}` : `Wayback request error: ${msg}`));
+      // Canonical window: derive from selected Wayback snapshots (if available), otherwise use current state.
+      if (showWayback && wayback) {
+        const before = wayback.options.find((o) => o.id === wayback.beforeId);
+        const after = wayback.options.find((o) => o.id === wayback.afterId);
+        if (before?.date && after?.date) {
+          windowStart = before.date;
+          windowEnd = after.date;
         }
       }
 
@@ -469,7 +573,17 @@ export function GeoProofApp() {
     } finally {
       setLoading(false);
     }
-  }, [effectiveBbox, mode, startDate, endDate, maxCloudOffsetDays, showSecondary, showWayback, tileZoom]);
+  }, [
+    effectiveBbox,
+    mode,
+    startDate,
+    endDate,
+    maxCloudOffsetDays,
+    showSecondary,
+    showWayback,
+    wayback,
+    resetStacComputed,
+  ]);
 
   const onMapClick = useCallback(
     (coord: [number, number]) => {
@@ -478,8 +592,7 @@ export function GeoProofApp() {
       setStacLandsat(null);
       setWayback(null);
       setSecondaryWarning(null);
-      setDiffStats(null);
-      setPrimaryArtifacts(null);
+      resetComputed();
       setPublishError(null);
       setPublishResult(null);
 
@@ -517,7 +630,7 @@ export function GeoProofApp() {
         setToPlace(null);
       }
     },
-    [mode, bboxAnchor, fromCoord, toCoord],
+    [mode, bboxAnchor, fromCoord, toCoord, resetComputed],
   );
 
   const doPublish = useCallback(async () => {
@@ -531,7 +644,7 @@ export function GeoProofApp() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           reportDraft,
-          artifacts: primaryArtifacts ?? undefined,
+          artifacts: activeComputed.artifacts ?? undefined,
         }),
       });
 
@@ -552,7 +665,9 @@ export function GeoProofApp() {
     } finally {
       setPublishLoading(false);
     }
-  }, [primaryArtifacts, reportDraft]);
+  }, [activeComputed.artifacts, reportDraft]);
+
+  const diffStats = activeComputed.stats;
 
   return (
     <div className="min-h-screen bg-zinc-950">
@@ -583,7 +698,7 @@ export function GeoProofApp() {
                       setStacS2(null);
                       setStacLandsat(null);
                       setSecondaryWarning(null);
-                      setDiffStats(null);
+                            resetComputed();
                       setMode("bbox");
                       setBboxAnchor(null);
                       setCenterCoord(null);
@@ -608,7 +723,7 @@ export function GeoProofApp() {
                       setStacS2(null);
                       setStacLandsat(null);
                       setSecondaryWarning(null);
-                      setDiffStats(null);
+                            resetComputed();
                       setMode("radius");
                       setBboxAnchor(null);
                       setFromCoord(null);
@@ -631,7 +746,7 @@ export function GeoProofApp() {
                       setStacS2(null);
                       setStacLandsat(null);
                       setSecondaryWarning(null);
-                      setDiffStats(null);
+                            resetComputed();
                       setMode("fromTo");
                       setBboxAnchor(null);
                       setCenterCoord(null);
@@ -669,7 +784,7 @@ export function GeoProofApp() {
                       setStacS2(null);
                       setStacLandsat(null);
                       setSecondaryWarning(null);
-                      setDiffStats(null);
+                            resetComputed();
                     }}
                   />
 
@@ -714,7 +829,7 @@ export function GeoProofApp() {
                       setStacS2(null);
                       setStacLandsat(null);
                       setSecondaryWarning(null);
-                      setDiffStats(null);
+                            resetComputed();
                     }}
                   />
                   <PlaceSearch
@@ -727,7 +842,7 @@ export function GeoProofApp() {
                       setStacS2(null);
                       setStacLandsat(null);
                       setSecondaryWarning(null);
-                      setDiffStats(null);
+                            resetComputed();
                     }}
                   />
                 </div>
@@ -819,10 +934,12 @@ export function GeoProofApp() {
                       </div>
                     </div>
                   </div>
+                ) : waybackLoading ? (
+                  <div className="mt-2 text-xs text-zinc-500">Loading Wayback timeline for this area…</div>
                 ) : (
                   <div className="mt-2 text-xs text-zinc-500">
-                    Click <span className="font-medium text-zinc-300">Find imagery</span> to load the Wayback timeline
-                    for your selected area.
+                    Wayback timeline will appear here once we have enough unique snapshots for your selected area.
+                    Try zooming in (smaller bbox) or increasing output zoom.
                   </div>
                 )}
               </div>
@@ -840,7 +957,7 @@ export function GeoProofApp() {
                           checked={primarySource === "wayback"}
                           onChange={() => {
                             setPrimarySource("wayback");
-                            setDiffStats(null);
+                            resetComputed();
                           }}
                         />
                         Wayback (cloud-free)
@@ -852,7 +969,7 @@ export function GeoProofApp() {
                           checked={primarySource === "sentinel-2-l2a"}
                           onChange={() => {
                             setPrimarySource("sentinel-2-l2a");
-                            setDiffStats(null);
+                            resetComputed();
                           }}
                         />
                         Sentinel-2
@@ -865,7 +982,7 @@ export function GeoProofApp() {
                           disabled={!showSecondary}
                           onChange={() => {
                             setPrimarySource("landsat-c2-l2");
-                            setDiffStats(null);
+                            resetComputed();
                           }}
                         />
                         Landsat
@@ -882,7 +999,7 @@ export function GeoProofApp() {
                           checked={ignoreClouds}
                           onChange={(e) => {
                             setIgnoreClouds(e.target.checked);
-                            setDiffStats(null);
+                            resetComputed();
                           }}
                         />
                         Ignore cloud-like pixels
@@ -893,7 +1010,7 @@ export function GeoProofApp() {
                           checked={ignoreDark}
                           onChange={(e) => {
                             setIgnoreDark(e.target.checked);
-                            setDiffStats(null);
+                            resetComputed();
                           }}
                         />
                         Ignore very-dark pixels
@@ -909,7 +1026,7 @@ export function GeoProofApp() {
                       disabled={primarySource === "wayback"}
                       onChange={() => {
                         setVariant("closest");
-                        setDiffStats(null);
+                        resetComputed();
                       }}
                     />
                     Closest to your chosen dates (may be cloudy)
@@ -922,7 +1039,7 @@ export function GeoProofApp() {
                       disabled={primarySource === "wayback"}
                       onChange={() => {
                         setVariant("clearest");
-                        setDiffStats(null);
+                        resetComputed();
                       }}
                     />
                     Clearest (lowest cloud) within ±{maxCloudOffsetDays} days
@@ -955,7 +1072,7 @@ export function GeoProofApp() {
                         setWayback(null);
                         if (!next && primarySource === "wayback") {
                           setPrimarySource("sentinel-2-l2a");
-                          setDiffStats(null);
+                          resetComputed();
                         }
                       }}
                     />
@@ -971,7 +1088,7 @@ export function GeoProofApp() {
                         setShowSecondary(next);
                         if (!next && primarySource === "landsat-c2-l2") {
                           setPrimarySource("sentinel-2-l2a");
-                          setDiffStats(null);
+                          resetComputed();
                         }
                         setStacLandsat(null);
                         setSecondaryWarning(null);
@@ -985,10 +1102,10 @@ export function GeoProofApp() {
               <div className="mt-3 flex items-center gap-2">
                 <button
                   onClick={runSearch}
-                  disabled={loading}
+                  disabled={loading || (showWayback && (waybackLoading || !wayback))}
                   className="inline-flex h-10 items-center justify-center rounded-lg bg-zinc-100 px-4 text-sm font-medium text-zinc-950 disabled:opacity-50"
                 >
-                  {loading ? "Searching…" : "Find imagery"}
+                  {loading ? "Searching…" : showWayback && (waybackLoading || !wayback) ? "Loading timeline…" : "Find imagery"}
                 </button>
                 <button
                   onClick={() => {
@@ -997,8 +1114,7 @@ export function GeoProofApp() {
                     setStacLandsat(null);
                     setWayback(null);
                     setSecondaryWarning(null);
-                    setDiffStats(null);
-                    setPrimaryArtifacts(null);
+                    resetComputed();
                     setPublishError(null);
                     setPublishResult(null);
 
@@ -1197,8 +1313,8 @@ export function GeoProofApp() {
 
             {stacS2 && effectiveBbox ? (
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-xl border border-zinc-200 bg-white p-3">
-                  <div className="mb-2 text-xs font-medium text-zinc-700">Closest</div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+                  <div className="mb-2 text-xs font-medium text-zinc-300">Closest</div>
                   <DiffViewer
                     beforeUrl={stacS2.before.previewUrl}
                     afterUrl={stacS2.after.previewUrl}
@@ -1211,15 +1327,13 @@ export function GeoProofApp() {
                     threshold={threshold}
                     ignoreClouds={ignoreClouds}
                     ignoreDark={ignoreDark}
-                    onComputed={primarySource === "sentinel-2-l2a" && variant === "closest" ? setDiffStats : undefined}
-                    onArtifacts={
-                      primarySource === "sentinel-2-l2a" && variant === "closest" ? setPrimaryArtifacts : undefined
-                    }
+                    onComputed={setS2ClosestStats}
+                    onArtifacts={setS2ClosestArtifacts}
                   />
                 </div>
 
-                <div className="rounded-xl border border-zinc-200 bg-white p-3">
-                  <div className="mb-2 text-xs font-medium text-zinc-700">Clearest</div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+                  <div className="mb-2 text-xs font-medium text-zinc-300">Clearest</div>
                   <DiffViewer
                     beforeUrl={(stacS2.beforeClear ?? stacS2.before).previewUrl}
                     afterUrl={(stacS2.afterClear ?? stacS2.after).previewUrl}
@@ -1232,10 +1346,8 @@ export function GeoProofApp() {
                     threshold={threshold}
                     ignoreClouds={ignoreClouds}
                     ignoreDark={ignoreDark}
-                    onComputed={primarySource === "sentinel-2-l2a" && variant === "clearest" ? setDiffStats : undefined}
-                    onArtifacts={
-                      primarySource === "sentinel-2-l2a" && variant === "clearest" ? setPrimaryArtifacts : undefined
-                    }
+                    onComputed={setS2ClearestStats}
+                    onArtifacts={setS2ClearestArtifacts}
                   />
                 </div>
               </div>
@@ -1272,26 +1384,27 @@ export function GeoProofApp() {
                     selectionBbox={effectiveBbox}
                     beforeTileUrlTemplate={waybackPicked.before.tileUrlTemplate}
                     afterTileUrlTemplate={waybackPicked.after.tileUrlTemplate}
+                    allowMissingTiles
                     tileZoom={tileZoom}
                     threshold={threshold}
                     ignoreClouds={ignoreClouds}
                     ignoreDark={ignoreDark}
-                    onComputed={primarySource === "wayback" ? setDiffStats : undefined}
-                    onArtifacts={primarySource === "wayback" ? setPrimaryArtifacts : undefined}
+                    onComputed={setWaybackStats}
+                    onArtifacts={setWaybackArtifacts}
                   />
                 </div>
               </div>
             ) : null}
 
             {showSecondary && stacLandsat ? (
-              <div className="rounded-xl border border-zinc-200 bg-white p-4">
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
                 <div className="flex items-baseline justify-between gap-3">
-                  <div className="text-sm font-medium text-zinc-900">Landsat (alternate source)</div>
-                  <div className="text-xs text-zinc-500">Candidates scanned: {stacLandsat.query.totalCandidates}</div>
+                  <div className="text-sm font-medium text-zinc-100">Landsat (alternate source)</div>
+                  <div className="text-xs text-zinc-400">Candidates scanned: {stacLandsat.query.totalCandidates}</div>
                 </div>
                 <div className="mt-2 grid gap-4 md:grid-cols-2">
-                  <div className="rounded-xl border border-zinc-200 bg-white p-3">
-                    <div className="mb-2 text-xs font-medium text-zinc-700">Closest</div>
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+                    <div className="mb-2 text-xs font-medium text-zinc-300">Closest</div>
                     <DiffViewer
                       beforeUrl={stacLandsat.before.previewUrl}
                       afterUrl={stacLandsat.after.previewUrl}
@@ -1304,15 +1417,13 @@ export function GeoProofApp() {
                       threshold={threshold}
                       ignoreClouds={ignoreClouds}
                       ignoreDark={ignoreDark}
-                      onComputed={primarySource === "landsat-c2-l2" && variant === "closest" ? setDiffStats : undefined}
-                      onArtifacts={
-                        primarySource === "landsat-c2-l2" && variant === "closest" ? setPrimaryArtifacts : undefined
-                      }
+                      onComputed={setLsClosestStats}
+                      onArtifacts={setLsClosestArtifacts}
                     />
                   </div>
 
-                  <div className="rounded-xl border border-zinc-200 bg-white p-3">
-                    <div className="mb-2 text-xs font-medium text-zinc-700">Clearest</div>
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-3">
+                    <div className="mb-2 text-xs font-medium text-zinc-300">Clearest</div>
                     <DiffViewer
                       beforeUrl={(stacLandsat.beforeClear ?? stacLandsat.before).previewUrl}
                       afterUrl={(stacLandsat.afterClear ?? stacLandsat.after).previewUrl}
@@ -1325,10 +1436,8 @@ export function GeoProofApp() {
                       threshold={threshold}
                       ignoreClouds={ignoreClouds}
                       ignoreDark={ignoreDark}
-                      onComputed={primarySource === "landsat-c2-l2" && variant === "clearest" ? setDiffStats : undefined}
-                      onArtifacts={
-                        primarySource === "landsat-c2-l2" && variant === "clearest" ? setPrimaryArtifacts : undefined
-                      }
+                      onComputed={setLsClearestStats}
+                      onArtifacts={setLsClearestArtifacts}
                     />
                   </div>
                 </div>

@@ -19,6 +19,7 @@ type Props = {
   selectionBbox?: BBox | null;
   beforeTileUrlTemplate?: string | null;
   afterTileUrlTemplate?: string | null;
+  allowMissingTiles?: boolean;
   tileZoom?: number;
   threshold: number; // 0..255
   ignoreClouds?: boolean;
@@ -112,6 +113,7 @@ async function loadBboxImageFromTiles(
   tileTpl: string,
   bbox: BBox,
   requestedZoom: number,
+  allowMissingTiles: boolean,
   onProgress?: (p: { done: number; total: number; z: number }) => void,
 ): Promise<{ imageData: ImageData; dataUrl: string; usedZoom: number }>
 {
@@ -154,6 +156,7 @@ async function loadBboxImageFromTiles(
 
       const total = c.tilesX * c.tilesY;
       let done = 0;
+      let missing = 0;
       onProgress?.({ done, total, z });
 
       // Fetch tiles sequentially (small count; avoids spiky parallelism).
@@ -169,15 +172,28 @@ async function loadBboxImageFromTiles(
           } finally {
             clearTimeout(t);
           }
-          if (!res.ok) {
-            throw new Error(`Tile fetch failed (${res.status}) for ${url}`);
+          if (res.ok) {
+            const blob = await res.blob();
+            const bmp = await createImageBitmap(blob);
+            mctx.drawImage(bmp, (tx - c.x0) * 256, (ty - c.y0) * 256, 256, 256);
+          } else {
+            if (!allowMissingTiles) {
+              throw new Error(`Tile fetch failed (${res.status}) for ${url}`);
+            }
+            // Leave this tile transparent; many providers (including Wayback) legitimately have sparse coverage.
+            missing += 1;
           }
-          const blob = await res.blob();
-          const bmp = await createImageBitmap(blob);
-          mctx.drawImage(bmp, (tx - c.x0) * 256, (ty - c.y0) * 256, 256, 256);
 
           done += 1;
           onProgress?.({ done, total, z });
+        }
+      }
+
+      if (allowMissingTiles) {
+        // If most tiles are missing, the mosaic is likely unusable.
+        const missingRatio = total > 0 ? missing / total : 1;
+        if (missingRatio >= 0.7) {
+          throw new Error(`Too many missing tiles (${missing}/${total}) at z=${z}`);
         }
       }
 
@@ -223,6 +239,7 @@ export function DiffViewer({
   selectionBbox,
   beforeTileUrlTemplate,
   afterTileUrlTemplate,
+  allowMissingTiles = false,
   tileZoom = 16,
   threshold,
   ignoreClouds = true,
@@ -252,7 +269,7 @@ export function DiffViewer({
     () =>
       `${beforeUrl ?? ""}|${afterUrl ?? ""}|${threshold}|${selectionBbox?.join(",") ?? ""}|${
         beforeItemBbox?.join(",") ?? ""
-      }|${afterItemBbox?.join(",") ?? ""}|${beforeTileUrlTemplate ?? ""}|${afterTileUrlTemplate ?? ""}|${tileZoom}|${ignoreClouds ? 1 : 0}|${ignoreDark ? 1 : 0}`,
+      }|${afterItemBbox?.join(",") ?? ""}|${beforeTileUrlTemplate ?? ""}|${afterTileUrlTemplate ?? ""}|${allowMissingTiles ? 1 : 0}|${tileZoom}|${ignoreClouds ? 1 : 0}|${ignoreDark ? 1 : 0}`,
     [
       beforeUrl,
       afterUrl,
@@ -262,6 +279,7 @@ export function DiffViewer({
       afterItemBbox,
       beforeTileUrlTemplate,
       afterTileUrlTemplate,
+      allowMissingTiles,
       tileZoom,
       ignoreClouds,
       ignoreDark,
@@ -278,6 +296,7 @@ export function DiffViewer({
       selectionBbox,
       beforeTileUrlTemplate,
       afterTileUrlTemplate,
+      allowMissingTiles,
       tileZoom,
       ignoreClouds,
       ignoreDark,
@@ -292,6 +311,7 @@ export function DiffViewer({
       selectionBbox,
       beforeTileUrlTemplate,
       afterTileUrlTemplate,
+      allowMissingTiles,
       tileZoom,
       ignoreClouds,
       ignoreDark,
@@ -385,11 +405,11 @@ export function DiffViewer({
             };
 
             const [ra, rb] = await Promise.all([
-              loadBboxImageFromTiles(b0, bb, inputs.tileZoom ?? 16, (p) => {
+              loadBboxImageFromTiles(b0, bb, inputs.tileZoom ?? 16, inputs.allowMissingTiles, (p) => {
                 prog.before = p;
                 pushProgress();
               }),
-              loadBboxImageFromTiles(b1, bb, inputs.tileZoom ?? 16, (p) => {
+              loadBboxImageFromTiles(b1, bb, inputs.tileZoom ?? 16, inputs.allowMissingTiles, (p) => {
                 prog.after = p;
                 pushProgress();
               }),
