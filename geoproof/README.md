@@ -10,6 +10,7 @@ GeoProof generates a verifiable satellite change report:
 
 - Node.js + npm
 - Sui CLI installed (`sui --version`)
+- Walrus CLI installed (`walrus --version`)
 
 Official references:
 - Install Sui CLI: https://docs.sui.io/guides/developer/getting-started/sui-install
@@ -17,6 +18,7 @@ Official references:
 - Sui keytool docs: https://docs.sui.io/references/cli/keytool
 - Get testnet coins / faucet: https://docs.sui.io/guides/developer/getting-started/get-coins
 - Walrus networks + Testnet WAL faucet: https://docs.wal.app/docs/usage/networks#testnet-wal-faucet
+- Walrus getting started (suiup install + client config): https://docs.wal.app/docs/usage/started
 - Walrus TS SDK (upload relay, Next.js note): https://sdk.mystenlabs.com/walrus
 
 ## 1) Run locally
@@ -41,6 +43,25 @@ The backend route `POST /api/publish` needs:
 sui client new-env --alias testnet --rpc https://fullnode.testnet.sui.io:443 || true
 sui client switch --env testnet
 ```
+
+### 2.1b Install + configure Walrus CLI (testnet)
+
+Walrus docs recommend using `suiup` to install both `sui` and `walrus`:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/Mystenlabs/suiup/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+suiup install walrus
+```
+
+Then download the pre-filled Walrus client config (includes testnet RPC URLs + Walrus system objects):
+
+```bash
+curl -sSfL --create-dirs https://docs.wal.app/setup/client_config.yaml -o ~/.config/walrus/client_config.yaml
+walrus info
+```
+
+The `walrus info` output should include `Epoch duration: 1day` for Testnet.
 
 ### 2.2 Create a new address (local keystore)
 
@@ -77,7 +98,7 @@ sui client balance
 Walrus writes require WAL tokens (separate from SUI gas). Walrus docs describe getting Testnet WAL by exchanging a small amount of Testnet SUI:
 
 ```bash
-walrus get-wal
+walrus get-wal --context testnet
 ```
 
 Then verify you have both SUI + WAL:

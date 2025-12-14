@@ -1531,7 +1531,10 @@ export function GeoProofApp() {
                         Bundle size: <span className="font-mono text-zinc-200">{(publishEstimate.bytes.evidenceBundle / 1024).toFixed(1)} KB</span>
                       </div>
                       <div>
-                        Expected WAL type: <span className="font-mono text-zinc-200">{publishEstimate.walrus.resolved.derivedWalType ?? "(unknown)"}</span>
+                        Expected WAL type:{" "}
+                        <span className="font-mono text-zinc-200 break-all">
+                          {publishEstimate.walrus.resolved.derivedWalType ?? "(unknown)"}
+                        </span>
                       </div>
                       {publishEstimate.walrus.resolved.derivedWalType ? (
                         <div>
