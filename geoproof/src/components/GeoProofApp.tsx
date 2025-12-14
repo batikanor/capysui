@@ -196,6 +196,20 @@ export function GeoProofApp() {
 
   const [tileZoom, setTileZoom] = useState<number>(16);
 
+  const [countPrompt, setCountPrompt] = useState<string>("trees");
+  const [countThreshold, setCountThreshold] = useState<number>(0.2);
+  const [countLoading, setCountLoading] = useState<boolean>(false);
+  const [countError, setCountError] = useState<string | null>(null);
+  const [countResult, setCountResult] = useState<
+    | {
+        labels: string[];
+        threshold: number;
+        before: { counts: Record<string, number> };
+        after: { counts: Record<string, number> };
+      }
+    | null
+  >(null);
+
   const suiExplorerHref = useCallback(
     (kind: "object" | "address" | "txblock", id: string, net: string) => {
       const network = net === "mainnet" ? "mainnet" : "testnet";
@@ -697,6 +711,60 @@ export function GeoProofApp() {
     wayback,
     waybackPicked,
   ]);
+
+  const runCountObjects = useCallback(async () => {
+    const artifacts = activeComputed.artifacts;
+    const beforeDataUrl = artifacts?.beforeDataUrl ?? null;
+    const afterDataUrl = artifacts?.afterDataUrl ?? null;
+    if (!beforeDataUrl || !afterDataUrl) {
+      setCountError("Run a diff first so we have before/after images to analyze.");
+      return;
+    }
+
+    const labels = countPrompt
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!labels.length) {
+      setCountError("Enter at least one label (e.g. trees, buildings, cars).");
+      return;
+    }
+
+    setCountLoading(true);
+    setCountError(null);
+    setCountResult(null);
+    try {
+      const doOne = async (imageDataUrl: string) => {
+        const res = await fetch("/api/vision/count", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ imageDataUrl, labels, threshold: countThreshold }),
+        });
+        const raw = (await res.json()) as unknown;
+        if (!res.ok) {
+          const msg =
+            typeof raw === "object" && raw !== null && typeof (raw as { error?: unknown }).error === "string"
+              ? (raw as { error: string }).error
+              : `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        const counts =
+          typeof raw === "object" && raw !== null && typeof (raw as { counts?: unknown }).counts === "object" &&
+          (raw as { counts?: unknown }).counts !== null
+            ? ((raw as { counts: Record<string, number> }).counts ?? {})
+            : {};
+        return { counts };
+      };
+
+      const [before, after] = await Promise.all([doOne(beforeDataUrl), doOne(afterDataUrl)]);
+      setCountResult({ labels, threshold: countThreshold, before, after });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setCountError(msg);
+    } finally {
+      setCountLoading(false);
+    }
+  }, [activeComputed.artifacts, countPrompt, countThreshold]);
 
   const runSearch = useCallback(async () => {
     setError(null);
@@ -1627,6 +1695,109 @@ export function GeoProofApp() {
               </div>
               <div className="mt-2 text-xs text-zinc-500">
                 If the bbox is large, we may automatically zoom out to keep tile downloads reasonable.
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+              <div className="mb-2 text-sm font-medium text-zinc-100">What else can be done?</div>
+              <div className="text-xs text-zinc-300">
+                Beyond pixel-diffing, we can run open-vocabulary object counting (e.g. trees, buildings, cars) on the
+                before/after crops and compare counts.
+              </div>
+
+              <div className="mt-3 grid gap-3">
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                  <div className="text-xs font-medium text-zinc-200">Experimental: “count objects” (SAM3-style)</div>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-400">
+                    <li>
+                      Use cases: forestry monitoring (tree loss/gain), post-fire assessment, construction / urban growth,
+                      vehicle/boat activity, etc.
+                    </li>
+                    <li>
+                      Works locally once you set <span className="font-mono text-zinc-200">HUGGINGFACE_API_KEY</span> in
+                      <span className="font-mono text-zinc-200"> geoproof/.env.local</span>.
+                    </li>
+                    <li>
+                      Under the hood we call Hugging Face Inference API for zero-shot object detection.
+                      <span className="ml-2">
+                        <a
+                          className="underline"
+                          href="https://huggingface.co/docs/inference-providers/en/tasks/object-detection"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          docs
+                        </a>
+                      </span>
+                    </li>
+                  </ul>
+
+                  <div className="mt-3 grid gap-2">
+                    <label className="grid gap-1">
+                      <div className="text-[11px] uppercase tracking-wide text-zinc-500">Objects to count (comma-separated)</div>
+                      <input
+                        value={countPrompt}
+                        onChange={(e) => setCountPrompt(e.target.value)}
+                        placeholder="trees, buildings, cars"
+                        className="h-9 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 text-xs text-zinc-200"
+                      />
+                    </label>
+
+                    <div>
+                      <div className="mb-1 text-xs font-medium text-zinc-300">Detection threshold</div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={0.05}
+                          max={0.9}
+                          step={0.05}
+                          value={countThreshold}
+                          onChange={(e) => setCountThreshold(Number(e.target.value))}
+                          className="w-full"
+                        />
+                        <div className="w-12 text-right font-mono text-xs text-zinc-300">{countThreshold.toFixed(2)}</div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={countLoading || !(activeComputed.artifacts?.beforeDataUrl && activeComputed.artifacts?.afterDataUrl)}
+                      onClick={runCountObjects}
+                      className="inline-flex h-9 w-full items-center justify-center rounded-lg bg-zinc-100 text-xs font-medium text-zinc-950 disabled:opacity-50"
+                    >
+                      {countLoading ? "Counting…" : "Count in before/after + show Δ"}
+                    </button>
+
+                    {countError ? (
+                      <div className="rounded-md border border-red-900/40 bg-red-950/40 p-2 text-xs text-red-200">
+                        {countError}
+                      </div>
+                    ) : null}
+
+                    {countResult ? (
+                      <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2 text-xs text-zinc-200">
+                        <div className="font-medium text-zinc-300">Counts</div>
+                        <div className="mt-2 grid gap-2">
+                          {countResult.labels.map((label) => {
+                            const b = countResult.before.counts[label] ?? 0;
+                            const a = countResult.after.counts[label] ?? 0;
+                            const d = a - b;
+                            return (
+                              <div key={label} className="rounded-md border border-zinc-800 bg-zinc-900 p-2">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-xs font-medium text-zinc-200">{label}</div>
+                                  <div className="font-mono text-xs text-zinc-200">
+                                    {b} → {a} ({d >= 0 ? "+" : ""}{d})
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               </div>
             </div>
 
