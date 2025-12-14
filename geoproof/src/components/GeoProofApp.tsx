@@ -183,6 +183,7 @@ export function GeoProofApp() {
 
   type ArtifactsMode = "none" | "diff" | "all";
   const [artifactsMode, setArtifactsMode] = useState<ArtifactsMode>("none");
+  const [showBundleHelp, setShowBundleHelp] = useState<boolean>(false);
 
   type PublishEstimateOk = {
     bytes: { evidenceBundle: number };
@@ -194,6 +195,20 @@ export function GeoProofApp() {
   const [waybackComputeNonce, setWaybackComputeNonce] = useState<number>(0);
 
   const [tileZoom, setTileZoom] = useState<number>(16);
+
+  const suiExplorerHref = useCallback(
+    (kind: "object" | "address" | "txblock", id: string, net: string) => {
+      const network = net === "mainnet" ? "mainnet" : "testnet";
+      return `https://explorer.sui.io/${kind}/${encodeURIComponent(id)}?network=${encodeURIComponent(network)}`;
+    },
+    [],
+  );
+
+  const walruscanBlobHref = useCallback((blobId: string) => {
+    // Walrus docs mention Walrus Explorer at walruscan.com.
+    // https://docs.wal.app/docs/usage/started
+    return `https://walruscan.com/blob/${encodeURIComponent(blobId)}`;
+  }, []);
 
   type ChainReportItem = {
     objectId: string;
@@ -354,6 +369,30 @@ export function GeoProofApp() {
       cancelled = true;
     };
   }, [selectedReport?.walrusBlobId]);
+
+  const selectedArtifacts = useMemo(() => {
+    if (!selectedReportBlob || typeof selectedReportBlob !== "object") return null;
+    const a = (selectedReportBlob as Record<string, unknown>).artifacts;
+    if (typeof a !== "object" || a === null) return null;
+    const before = (a as Record<string, unknown>).beforeDataUrl;
+    const after = (a as Record<string, unknown>).afterDataUrl;
+    const diff = (a as Record<string, unknown>).diffDataUrl;
+    const norm = (v: unknown) => (typeof v === "string" && v.startsWith("data:image/") ? v : null);
+    return { before: norm(before), after: norm(after), diff: norm(diff) };
+  }, [selectedReportBlob]);
+
+  const publishSummary = useMemo(() => {
+    if (!publishResult || typeof publishResult !== "object" || publishResult === null) return null;
+    const fallbackNetwork = publishBalance && !("error" in publishBalance) ? publishBalance.network : "testnet";
+    const r = publishResult as Record<string, unknown>;
+    const walrusBlobId = typeof r.walrusBlobId === "string" ? r.walrusBlobId : null;
+    const reportSha256 = typeof r.reportSha256 === "string" ? r.reportSha256 : null;
+    const sui = typeof r.sui === "object" && r.sui !== null ? (r.sui as Record<string, unknown>) : null;
+    const digest = sui && typeof sui.digest === "string" ? sui.digest : null;
+    const createdObjectId = sui && typeof sui.createdObjectId === "string" ? sui.createdObjectId : null;
+    const network = sui && typeof sui.network === "string" ? sui.network : fallbackNetwork;
+    return { walrusBlobId, reportSha256, digest, createdObjectId, network };
+  }, [publishResult, publishBalance]);
 
   const resetComputed = useCallback(() => {
     setWaybackStats(null);
@@ -870,6 +909,11 @@ export function GeoProofApp() {
       return String(ms);
     }
   }, []);
+
+  const effectiveNetwork = useMemo(() => {
+    if (publishBalance && !("error" in publishBalance)) return publishBalance.network;
+    return "testnet";
+  }, [publishBalance]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1668,7 +1712,18 @@ export function GeoProofApp() {
                               {r.variant ? <span className="text-zinc-500"> · {r.variant}</span> : null}
                               {r.startDate && r.endDate ? <span className="text-zinc-500"> · {r.startDate}→{r.endDate}</span> : null}
                             </div>
-                            <div className="text-[11px] text-zinc-500">{fmtDateTime(r.createdAtMs)}</div>
+                            <div className="flex items-center gap-2">
+                              <a
+                                href={suiExplorerHref("object", r.objectId, effectiveNetwork)}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[11px] text-zinc-300 underline"
+                              >
+                                explorer
+                              </a>
+                              <div className="text-[11px] text-zinc-500">{fmtDateTime(r.createdAtMs)}</div>
+                            </div>
                           </div>
                           <div className="mt-1 font-mono text-[11px] leading-4 text-zinc-500 break-all">{r.objectId}</div>
                         </button>
@@ -1682,11 +1737,61 @@ export function GeoProofApp() {
                     <div className="text-xs font-medium text-zinc-200">Selected report</div>
                     <div className="mt-2 grid gap-2 text-xs text-zinc-400">
                       <div>
-                        Sui object: <span className="font-mono text-[11px] text-zinc-200 break-all">{selectedReport.objectId}</span>
+                        Sui object:{" "}
+                        <span className="font-mono text-[11px] text-zinc-200 break-all">{selectedReport.objectId}</span>
+                        <a
+                          className="ml-2 text-[11px] text-zinc-300 underline"
+                          href={suiExplorerHref("object", selectedReport.objectId, effectiveNetwork)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          view
+                        </a>
                       </div>
+                      <div>
+                        Tx digest:{" "}
+                        <span className="font-mono text-[11px] text-zinc-200 break-all">{selectedReport.digest}</span>
+                        <a
+                          className="ml-2 text-[11px] text-zinc-300 underline"
+                          href={suiExplorerHref("txblock", selectedReport.digest, effectiveNetwork)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          view
+                        </a>
+                      </div>
+                      {(() => {
+                        const owner = selectedReport.owner;
+                        if (typeof owner !== "object" || owner === null) return null;
+                        const addr = (owner as { AddressOwner?: unknown }).AddressOwner;
+                        if (typeof addr !== "string") return null;
+                        return (
+                          <div>
+                            Owner:{" "}
+                            <span className="font-mono text-[11px] text-zinc-200 break-all">{addr}</span>
+                            <a
+                              className="ml-2 text-[11px] text-zinc-300 underline"
+                              href={suiExplorerHref("address", addr, effectiveNetwork)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              view
+                            </a>
+                          </div>
+                        );
+                      })()}
                       {selectedReport.walrusBlobId ? (
                         <div>
-                          Walrus blob: <span className="font-mono text-[11px] text-zinc-200 break-all">{selectedReport.walrusBlobId}</span>
+                          Walrus blob:{" "}
+                          <span className="font-mono text-[11px] text-zinc-200 break-all">{selectedReport.walrusBlobId}</span>
+                          <a
+                            className="ml-2 text-[11px] text-zinc-300 underline"
+                            href={walruscanBlobHref(selectedReport.walrusBlobId)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            view
+                          </a>
                         </div>
                       ) : null}
                       {selectedReport.reportSha256Hex ? (
@@ -1704,9 +1809,41 @@ export function GeoProofApp() {
                             {selectedReportBlobError}
                           </div>
                         ) : selectedReportBlob ? (
-                          <pre className="mt-2 max-h-56 overflow-auto rounded-md border border-zinc-800 bg-zinc-950 p-2 text-[11px] leading-4 text-zinc-100">
-                            {JSON.stringify(selectedReportBlob, null, 2)}
-                          </pre>
+                          <div className="mt-2 grid gap-3">
+                            {selectedArtifacts && (selectedArtifacts.before || selectedArtifacts.after || selectedArtifacts.diff) ? (
+                              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                {selectedArtifacts.before ? (
+                                  <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2">
+                                    <div className="mb-1 text-[11px] text-zinc-400">Before</div>
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img src={selectedArtifacts.before} alt="Before" className="w-full rounded" loading="lazy" />
+                                  </div>
+                                ) : null}
+                                {selectedArtifacts.after ? (
+                                  <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2">
+                                    <div className="mb-1 text-[11px] text-zinc-400">After</div>
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img src={selectedArtifacts.after} alt="After" className="w-full rounded" loading="lazy" />
+                                  </div>
+                                ) : null}
+                                {selectedArtifacts.diff ? (
+                                  <div className="rounded-md border border-zinc-800 bg-zinc-950 p-2">
+                                    <div className="mb-1 text-[11px] text-zinc-400">Diff</div>
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img src={selectedArtifacts.diff} alt="Diff" className="w-full rounded" loading="lazy" />
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-zinc-500">
+                                No images stored in this bundle (publisher likely chose “Metadata only”).
+                              </div>
+                            )}
+
+                            <pre className="max-h-56 overflow-auto rounded-md border border-zinc-800 bg-zinc-950 p-2 text-[11px] leading-4 text-zinc-100">
+                              {JSON.stringify(selectedReportBlob, null, 2)}
+                            </pre>
+                          </div>
                         ) : (
                           <div className="mt-2 text-xs text-zinc-500">Loading…</div>
                         )}
@@ -1736,6 +1873,14 @@ export function GeoProofApp() {
                       <div className="rounded-md border border-zinc-800 bg-zinc-950 px-2 py-1 font-mono text-[11px] leading-4 text-zinc-200 break-all">
                         {publishBalance.address}
                       </div>
+                      <a
+                        className="text-[11px] text-zinc-300 underline"
+                        href={suiExplorerHref("address", publishBalance.address, publishBalance.network)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View address in Sui Explorer
+                      </a>
                     </div>
 
                     <div className="grid gap-1">
@@ -1815,7 +1960,16 @@ export function GeoProofApp() {
               </div>
 
               <div className="mt-3 grid gap-2">
-                <div className="text-xs font-medium text-zinc-200">Walrus bundle contents</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs font-medium text-zinc-200">Walrus bundle contents</div>
+                  <button
+                    type="button"
+                    onClick={() => setShowBundleHelp((v) => !v)}
+                    className="inline-flex h-7 items-center rounded-md border border-zinc-800 bg-zinc-900 px-2 text-[11px] text-zinc-200"
+                  >
+                    {showBundleHelp ? "Hide info" : "What is this?"}
+                  </button>
+                </div>
                 <select
                   value={artifactsMode}
                   onChange={(e) => setArtifactsMode(e.target.value as "none" | "diff" | "all")}
@@ -1825,6 +1979,66 @@ export function GeoProofApp() {
                   <option value="diff">Include diff mask only</option>
                   <option value="all">Include before + after + diff images</option>
                 </select>
+
+                {showBundleHelp ? (
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-200">
+                    <div className="font-medium text-zinc-300">How to choose (and what you can build)</div>
+                    <ul className="mt-2 list-disc space-y-3 pl-5 text-zinc-400">
+                      <li>
+                        <div className="font-medium text-zinc-200">Metadata only (recommended)</div>
+                        <ul className="mt-1 list-disc space-y-1 pl-5">
+                          <li>Cheapest, most robust (small Walrus bundle, fewer WAL issues).</li>
+                          <li>
+                            Great for apps that need <span className="text-zinc-200">verifiable references</span> rather than pixels.
+                          </li>
+                          <li>
+                            Example apps: “watch this region” alerts, public dashboards of change events, compliance/audit logs,
+                            research citations.
+                          </li>
+                        </ul>
+                      </li>
+
+                      <li>
+                        <div className="font-medium text-zinc-200">Include diff mask only</div>
+                        <ul className="mt-1 list-disc space-y-1 pl-5">
+                          <li>Medium size/cost; includes a compact visual signal of where change happened.</li>
+                          <li>
+                            Useful for quick triage and overlays: fire perimeter approximation, flood extent checks, urban expansion hotspots.
+                          </li>
+                          <li>Lets downstream tools visualize change without needing the original imagery immediately.</li>
+                        </ul>
+                      </li>
+
+                      <li>
+                        <div className="font-medium text-zinc-200">Include before + after + diff images</div>
+                        <ul className="mt-1 list-disc space-y-1 pl-5">
+                          <li>Largest bundle; costs more WAL and transfers more data.</li>
+                          <li>
+                            Best when you want the report to be <span className="text-zinc-200">fully self-contained</span> for offline review
+                            or sharing.
+                          </li>
+                          <li>
+                            Example apps: post-disaster assessments (forest fires, floods), annotation/review workflows, educational
+                            storytelling, ML dataset snapshots.
+                          </li>
+                        </ul>
+                      </li>
+                    </ul>
+
+                    <div className="mt-3 text-[11px] leading-4 text-zinc-500">
+                      Sources: Walrus documentation (storage / networks) and Sui Explorer.
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                        <a className="underline" href="https://docs.wal.app/docs/usage/started" target="_blank" rel="noreferrer">
+                          Walrus docs
+                        </a>
+                        <a className="underline" href="https://explorer.sui.io/?network=testnet" target="_blank" rel="noreferrer">
+                          Sui Explorer
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="text-[11px] leading-4 text-zinc-500">
                   Larger bundles cost more WAL and may fail if your WAL type doesn’t match the configured Walrus deployment.
                 </div>
@@ -1902,9 +2116,67 @@ export function GeoProofApp() {
               ) : null}
 
               {publishResult ? (
-                <pre className="mt-3 max-h-64 overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-[11px] leading-4 text-zinc-100">
-                  {JSON.stringify(publishResult, null, 2)}
-                </pre>
+                <div className="mt-3 grid gap-2">
+                  {publishSummary ? (
+                    <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-200">
+                      <div className="font-medium text-zinc-300">Explorer links</div>
+                      <div className="mt-2 grid gap-2 text-zinc-400">
+                        {publishSummary.createdObjectId ? (
+                          <div>
+                            Report object:{" "}
+                            <span className="font-mono text-[11px] text-zinc-200 break-all">{publishSummary.createdObjectId}</span>
+                            <a
+                              className="ml-2 text-[11px] text-zinc-300 underline"
+                              href={suiExplorerHref("object", publishSummary.createdObjectId, publishSummary.network)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              view
+                            </a>
+                          </div>
+                        ) : null}
+                        {publishSummary.digest ? (
+                          <div>
+                            Tx digest:{" "}
+                            <span className="font-mono text-[11px] text-zinc-200 break-all">{publishSummary.digest}</span>
+                            <a
+                              className="ml-2 text-[11px] text-zinc-300 underline"
+                              href={suiExplorerHref("txblock", publishSummary.digest, publishSummary.network)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              view
+                            </a>
+                          </div>
+                        ) : null}
+                        {publishSummary.walrusBlobId ? (
+                          <div>
+                            Walrus blob:{" "}
+                            <span className="font-mono text-[11px] text-zinc-200 break-all">{publishSummary.walrusBlobId}</span>
+                            <a
+                              className="ml-2 text-[11px] text-zinc-300 underline"
+                              href={walruscanBlobHref(publishSummary.walrusBlobId)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              view
+                            </a>
+                          </div>
+                        ) : null}
+                        {publishSummary.reportSha256 ? (
+                          <div>
+                            Bundle SHA-256:{" "}
+                            <span className="font-mono text-[11px] text-zinc-200 break-all">{publishSummary.reportSha256}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <pre className="max-h-64 overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-[11px] leading-4 text-zinc-100">
+                    {JSON.stringify(publishResult, null, 2)}
+                  </pre>
+                </div>
               ) : null}
 
               {reportDraft ? (

@@ -6,6 +6,9 @@ import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+const CACHE_TTL_MS = 15_000;
+const cache = new Map<string, { ts: number; value: SearchResponse }>();
+
 type SearchResponse = {
   network: string;
   packageId: string;
@@ -70,6 +73,18 @@ function getFields(content: unknown) {
   return fields as Record<string, unknown>;
 }
 
+function isTooManyRequests(e: unknown) {
+  if (typeof e !== "object" || e === null) return false;
+  const any = e as { status?: unknown; message?: unknown };
+  if (any.status === 429) return true;
+  if (typeof any.message === "string" && any.message.includes("429")) return true;
+  return false;
+}
+
+async function sleep(ms: number) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
 
@@ -91,21 +106,59 @@ export async function GET(req: Request) {
 
   const client = new SuiJsonRpcClient({ url: rpcUrl, network });
 
+  const cacheKey = `${network}|${bbox ? bbox.join(",") : ""}|${cursor ?? ""}|${limit}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+    return NextResponse.json(cached.value);
+  }
+
   // Sui RPC doesn't expose a "global query objects by type" via this client,
   // so we query transaction blocks that called create_report and extract created objects.
-  const txs = (await client.queryTransactionBlocks({
-    filter: {
-      MoveFunction: {
-        package: packageId,
-        module: "geoproof_move",
-        function: "create_report",
-      },
-    },
-    cursor,
-    limit,
-    order: "descending",
-    options: { showObjectChanges: true },
-  })) as unknown as TxPage;
+  let txs: TxPage | null = null;
+  try {
+    // Small retry/backoff to tolerate transient fullnode rate limiting.
+    // If it still fails, we surface a friendly message to the UI.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        txs = (await client.queryTransactionBlocks({
+          filter: {
+            MoveFunction: {
+              package: packageId,
+              module: "geoproof_move",
+              function: "create_report",
+            },
+          },
+          cursor,
+          limit,
+          order: "descending",
+          options: { showObjectChanges: true },
+        })) as unknown as TxPage;
+        break;
+      } catch (e: unknown) {
+        if (isTooManyRequests(e) && attempt < 2) {
+          await sleep(250 * (attempt + 1) * (attempt + 1));
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!txs) throw new Error("Failed to query transactions (no result)");
+  } catch (e: unknown) {
+    if (isTooManyRequests(e)) {
+      return NextResponse.json(
+        {
+          error: "Sui fullnode RPC is giving us 429 Too Many Requests. Please try again in ~30 seconds.",
+        },
+        { status: 429 },
+      );
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: `Failed to query Sui: ${msg}` }, { status: 502 });
+  }
+
+  if (!txs) {
+    return NextResponse.json({ error: "Failed to query Sui transactions." }, { status: 502 });
+  }
 
   const createdIds: Array<{ objectId: string; digest: string }> = [];
   for (const tx of txs.data) {
@@ -125,10 +178,24 @@ export async function GET(req: Request) {
     }
   }
 
-  const objs = await client.multiGetObjects({
-    ids: createdIds.map((x) => x.objectId),
-    options: { showContent: true, showOwner: true },
-  });
+  let objs: Awaited<ReturnType<typeof client.multiGetObjects>>;
+  try {
+    objs = await client.multiGetObjects({
+      ids: createdIds.map((x) => x.objectId),
+      options: { showContent: true, showOwner: true },
+    });
+  } catch (e: unknown) {
+    if (isTooManyRequests(e)) {
+      return NextResponse.json(
+        {
+          error: "Sui fullnode RPC is giving us 429 Too Many Requests. Please try again in ~30 seconds.",
+        },
+        { status: 429 },
+      );
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: `Failed to fetch report objects: ${msg}` }, { status: 502 });
+  }
 
   const items: SearchResponse["items"] = [];
   for (let i = 0; i < objs.length; i++) {
@@ -176,7 +243,7 @@ export async function GET(req: Request) {
     });
   }
 
-  return NextResponse.json({
+  const out = {
     network,
     packageId,
     type,
@@ -184,5 +251,8 @@ export async function GET(req: Request) {
     items,
     nextCursor: txs.nextCursor ?? null,
     hasNextPage: Boolean(txs.hasNextPage),
-  } satisfies SearchResponse);
+  } satisfies SearchResponse;
+
+  cache.set(cacheKey, { ts: Date.now(), value: out });
+  return NextResponse.json(out);
 }
